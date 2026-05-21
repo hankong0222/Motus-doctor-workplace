@@ -51,7 +51,7 @@ function createLightRig() {
   key.name = 'Key light';
   key.position.set(4.5, 6.5, 4);
   key.castShadow = true;
-  key.shadow.mapSize.set(2048, 2048);
+  key.shadow.mapSize.set(1024, 1024);
   key.shadow.camera.near = 0.1;
   key.shadow.camera.far = 18;
   key.shadow.camera.left = -7;
@@ -71,8 +71,8 @@ function createLightRig() {
 function createGridFloor(floorSize) {
   const group = new THREE.Group();
   const size = Math.max(72, Math.round(floorSize));
-  const divisions = Math.max(1, Math.round(size));
-  const majorDivisions = Math.max(1, Math.round(size / 6));
+  const divisions = Math.max(1, Math.round(size / 2));
+  const majorDivisions = Math.max(1, Math.round(size / 12));
 
   const floor = new THREE.Mesh(
     new THREE.PlaneGeometry(size, size),
@@ -85,19 +85,19 @@ function createGridFloor(floorSize) {
   floor.name = 'Simple floor';
   floor.rotation.x = -Math.PI / 2;
   floor.receiveShadow = true;
-  followCameraOnXZ(floor, 1);
+  followCameraOnXZ(floor, 2);
   group.add(floor);
 
   const grid = new THREE.GridHelper(size, divisions, 0x8d8d8d, 0x3f433f);
   grid.name = 'Reference grid';
   grid.position.y = 0.003;
-  followCameraOnXZ(grid, 1);
+  followCameraOnXZ(grid, 2);
   group.add(grid);
 
   const majorGrid = new THREE.GridHelper(size, majorDivisions, 0xaaaaaa, 0x575c57);
   majorGrid.name = 'Major reference grid';
   majorGrid.position.y = 0.006;
-  followCameraOnXZ(majorGrid, 6);
+  followCameraOnXZ(majorGrid, 12);
   group.add(majorGrid);
 
   return group;
@@ -131,11 +131,29 @@ function createGymModel(url, { height, position }) {
 
     if (gltf.animations.length > 0) {
       const mixer = new THREE.AnimationMixer(model);
-      const action = mixer.clipAction(gltf.animations[0]);
+      const clip = gltf.animations[0];
+      const action = mixer.clipAction(clip);
       action.setLoop(THREE.LoopRepeat, Infinity);
+      action.reset();
       action.play();
+
+      const setAnimationTime = (time) => {
+        const duration = clip.duration || 1;
+        const wrappedTime = ((time % duration) + duration) % duration;
+
+        mixer.setTime(wrappedTime);
+        model.updateMatrixWorld(true);
+      };
+
+      setAnimationTime(0);
       modelRoot.userData.mixer = mixer;
-      modelRoot.userData.update = ({ delta }) => mixer.update(delta);
+      modelRoot.userData.animation = {
+        mixer,
+        action,
+        clip,
+        duration: clip.duration,
+        setTime: setAnimationTime,
+      };
     }
 
     return {
@@ -144,6 +162,7 @@ function createGymModel(url, { height, position }) {
       animations: gltf.animations,
       animationStartPoint,
       followTarget,
+      animation: modelRoot.userData.animation ?? null,
     };
   });
 

@@ -13,7 +13,7 @@ export function createThreeScene(canvas) {
   scene.background = new THREE.Color(0x11130f);
   scene.fog = new THREE.Fog(0x11130f, 36, 160);
 
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.35));
   renderer.setClearColor(0x11130f, 1);
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.shadowMap.enabled = true;

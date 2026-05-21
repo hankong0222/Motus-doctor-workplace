@@ -8,10 +8,36 @@
   </head>
   <body>
     <canvas id="gym-canvas" aria-label="Motus gym 3D scene"></canvas>
+    <aside class="video-panel" aria-label="Reference video">
+      <video id="reference-video" class="video-panel__media" autoplay muted loop playsinline preload="auto">
+        <source src="/asset/7f4926b2406511f5640cfec85fa9620e.mp4" type="video/mp4" />
+      </video>
+    </aside>
     <div class="hud" aria-live="polite">
       <span class="hud__title">Motus Gym</span>
       <span class="hud__status" id="scene-status">Loading model</span>
     </div>
+    <section class="timeline-panel" aria-label="Playback timeline">
+      <button id="play-toggle" class="timeline-button timeline-button--primary" type="button">Pause</button>
+      <button id="step-back" class="timeline-button" type="button" aria-label="Previous frame">-1f</button>
+      <button id="step-forward" class="timeline-button" type="button" aria-label="Next frame">+1f</button>
+      <input
+        id="timeline-scrubber"
+        class="timeline-scrubber"
+        type="range"
+        min="0"
+        max="1000"
+        value="0"
+        step="1"
+        aria-label="Timeline"
+      />
+      <output id="timeline-time" class="timeline-time">00:00 / 00:00</output>
+      <select id="speed-select" class="speed-select" aria-label="Playback speed">
+        <option value="0.25">0.25x</option>
+        <option value="0.5">0.5x</option>
+        <option value="1" selected>1x</option>
+      </select>
+    </section>
     <script type="module" src="/src/main.js"></script>
   </body>
 </html>
