@@ -41,10 +41,11 @@ const ikDebugStatus = document.querySelector('#ik-debug-status');
 const ikDebugReadout = document.querySelector('#ik-debug-readout');
 const ikExportJson = document.querySelector('#ik-export-json');
 const ikExportCsv = document.querySelector('#ik-export-csv');
+const bvhVisualToggle = document.querySelector('#bvh-visual-toggle');
 
 const three = createThreeScene(canvas);
 const gym = createGymEnvironment();
-const bvhIkDebug = createBvhIkDebug();
+const bvhIkDebug = createBvhIkDebug({ showSkeleton: true, showIkHelpers: true });
 const followTargetPosition = new THREE.Vector3();
 const desiredTarget = new THREE.Vector3();
 const nextTarget = new THREE.Vector3();
@@ -82,7 +83,9 @@ video.loop = true;
 video.playbackRate = timeline.speed;
 
 let bvhIkRuntime = null;
+let glbReferenceModel = null;
 let latestIkReadoutFrame = -1;
+let bvhVisualsVisible = true;
 
 three.scene.add(gym.lightRig, gym.gridFloor, bvhIkDebug.root);
 three.start(({ delta }) => {
@@ -163,9 +166,23 @@ ikExportCsv.addEventListener('click', () => {
   exportBvhAnalysis('csv');
 });
 
+bvhVisualToggle.addEventListener('click', () => {
+  setBvhVisualsVisible(!bvhVisualsVisible);
+});
+
+document.addEventListener('keydown', (event) => {
+  if (!isBvhToggleShortcut(event)) {
+    return;
+  }
+
+  event.preventDefault();
+  setBvhVisualsVisible(!bvhVisualsVisible);
+});
+
 gym.modelReady
   .then((result) => {
     if (result?.model) {
+      glbReferenceModel = result.model;
       followTarget = result.followTarget ?? gym.modelRoot.userData.followTarget ?? result.model;
       timeline.modelReady = true;
       registerAnimationTarget('glb', {
@@ -180,6 +197,7 @@ gym.modelReady
 
       refreshTimelineBounds();
       setFrame(timeline.frame, { syncVideo: true });
+      bvhIkRuntime?.setReferenceModel(glbReferenceModel);
       tryPlayVideo();
     }
 
@@ -202,9 +220,12 @@ bvhIkDebug.ready
       setTime: runtime.setTime,
     });
 
-    ikDebugStatus.textContent = `${runtime.metadata.frames}f / ${runtime.metadata.bones} bones`;
+    updateIkDebugStatus();
     ikExportJson.disabled = false;
     ikExportCsv.disabled = false;
+    if (glbReferenceModel) {
+      runtime.setReferenceModel(glbReferenceModel);
+    }
     updateIkDebugUi(runtime.getCurrentFrame(), true);
     setFrame(timeline.frame, { syncVideo: true });
     tryPlayVideo();
@@ -433,13 +454,21 @@ function syncModelToTime(time) {
     return;
   }
 
-  timeline.animationTargets.forEach((target) => {
-    const frame = target.setTime?.(time);
+  timeline.animationTargets
+    .filter((target) => target.id !== 'bvh-ik')
+    .forEach((target) => {
+      target.setTime?.(time);
+    });
 
-    if (target.id === 'bvh-ik' && frame) {
-      updateIkDebugUi(frame);
-    }
-  });
+  timeline.animationTargets
+    .filter((target) => target.id === 'bvh-ik')
+    .forEach((target) => {
+      const frame = target.setTime?.(time);
+
+      if (frame) {
+        updateIkDebugUi(frame);
+      }
+    });
 }
 
 function seekVideoToFrame(frame, force) {
@@ -534,6 +563,54 @@ function registerAnimationTarget(id, { duration = 0, frameCount = 0, setTime }) 
 
 function hasAnimationTargets() {
   return timeline.animationTargets.length > 0;
+}
+
+function isBvhToggleShortcut(event) {
+  return event.ctrlKey
+    && !event.altKey
+    && !event.metaKey
+    && !event.repeat
+    && event.key.toLowerCase() === 'x'
+    && !isTextInputTarget(event.target);
+}
+
+function isTextInputTarget(target) {
+  const element = target instanceof HTMLElement ? target : null;
+
+  if (!element) {
+    return false;
+  }
+
+  const textInputTypes = new Set([
+    'email',
+    'number',
+    'password',
+    'search',
+    'tel',
+    'text',
+    'url',
+  ]);
+
+  return element.isContentEditable
+    || element.tagName === 'TEXTAREA'
+    || (element.tagName === 'INPUT' && textInputTypes.has(element.type));
+}
+
+function setBvhVisualsVisible(isVisible) {
+  bvhVisualsVisible = isVisible;
+  bvhIkDebug.root.visible = bvhVisualsVisible;
+  bvhVisualToggle.textContent = bvhVisualsVisible ? 'BVH On' : 'BVH Off';
+  bvhVisualToggle.setAttribute('aria-pressed', String(bvhVisualsVisible));
+  updateIkDebugStatus();
+}
+
+function updateIkDebugStatus() {
+  if (!bvhIkRuntime) {
+    ikDebugStatus.textContent = 'Loading BVH';
+    return;
+  }
+
+  ikDebugStatus.textContent = `${bvhIkRuntime.metadata.frames}f / ${bvhIkRuntime.metadata.bones} bones / ${bvhVisualsVisible ? 'on' : 'off'}`;
 }
 
 function updateIkDebugUi(frame, force = false) {

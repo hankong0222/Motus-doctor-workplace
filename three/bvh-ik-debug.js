@@ -6,6 +6,7 @@ export const DEFAULT_BVH_URL = '/asset/cJM4ngRqXg83-m9THA1iEvbnr.bvh';
 const DEFAULT_BVH_SCALE = 0.01;
 const FOOT_CONTACT_THRESHOLD = 0.055;
 const EPSILON = 0.000001;
+const SKELETON_OVERLAY_COLOR = 0xfff176;
 
 const GAIT_SIDES = [
   {
@@ -84,6 +85,8 @@ const IK_CHAINS = [
 export function createBvhIkDebug({
   url = DEFAULT_BVH_URL,
   scale = DEFAULT_BVH_SCALE,
+  showSkeleton = false,
+  showIkHelpers = false,
   showVisuals = false,
 } = {}) {
   const root = new THREE.Group();
@@ -91,14 +94,25 @@ export function createBvhIkDebug({
   const overlayRoot = new THREE.Group();
 
   root.name = 'BVH IK Debug';
-  root.visible = showVisuals;
+  const visualOptions = {
+    showSkeleton: showVisuals || showSkeleton,
+    showIkHelpers: showVisuals || showIkHelpers,
+  };
+
+  root.visible = visualOptions.showSkeleton || visualOptions.showIkHelpers;
   skeletonRoot.name = 'BVH calculation source';
   skeletonRoot.scale.setScalar(scale);
   overlayRoot.name = 'IK target debug overlay';
 
   root.add(skeletonRoot, overlayRoot);
 
-  const ready = loadBvhIkDebug({ url, root, skeletonRoot, overlayRoot, showVisuals });
+  const ready = loadBvhIkDebug({
+    url,
+    root,
+    skeletonRoot,
+    overlayRoot,
+    visualOptions,
+  });
   root.userData.ready = ready;
 
   return {
@@ -107,7 +121,7 @@ export function createBvhIkDebug({
   };
 }
 
-async function loadBvhIkDebug({ url, root, skeletonRoot, overlayRoot, showVisuals }) {
+async function loadBvhIkDebug({ url, root, skeletonRoot, overlayRoot, visualOptions }) {
   const response = await fetch(url);
 
   if (!response.ok) {
@@ -138,12 +152,10 @@ async function loadBvhIkDebug({ url, root, skeletonRoot, overlayRoot, showVisual
   const chains = IK_CHAINS
     .map((definition) => resolveIkChain(definition, boneMap))
     .filter(Boolean);
-  const helpers = showVisuals ? createIkHelpers(overlayRoot, chains) : createEmptyIkHelpers();
-  const skeletonHelper = showVisuals ? createSkeletonHelper(rootBone) : null;
-
-  if (skeletonHelper) {
-    root.add(skeletonHelper);
-  }
+  const helpers = visualOptions.showIkHelpers ? createIkHelpers(overlayRoot, chains) : createEmptyIkHelpers();
+  const skeletonVisual = visualOptions.showSkeleton
+    ? createSkeletonLineOverlay(overlayRoot, skeleton.bones)
+    : createEmptySkeletonVisual();
 
   alignSkeletonRoot(skeletonRoot, rootBone, skeleton.bones);
   root.updateMatrixWorld(true);
@@ -172,6 +184,7 @@ async function loadBvhIkDebug({ url, root, skeletonRoot, overlayRoot, showVisual
       chains,
     });
     updateIkHelpers(helpers, currentFrame, root);
+    updateSkeletonLineOverlay(skeletonVisual, root);
     return currentFrame;
   };
 
@@ -187,6 +200,25 @@ async function loadBvhIkDebug({ url, root, skeletonRoot, overlayRoot, showVisual
     contactBaselines,
     channelData,
     chains,
+    setReferenceModel: (model) => {
+      setSkeletonReferenceModel(skeletonVisual, model);
+      setIkReferenceModel(helpers, model);
+      updateSkeletonLineOverlay(skeletonVisual, root);
+    },
+    setSkeletonVisible: (visible) => {
+      skeletonVisual.enabled = Boolean(visible);
+      if (skeletonVisual.line) {
+        skeletonVisual.line.visible = skeletonVisual.enabled;
+      }
+      root.visible = skeletonVisual.enabled || helpers.enabled;
+    },
+    getVisualState: () => ({
+      skeletonEnabled: skeletonVisual.enabled,
+      skeletonSegments: skeletonVisual.segments.length,
+      glbAlignedSegments: skeletonVisual.segments.filter(
+        (segment) => segment.referenceBone && segment.referenceParentBone,
+      ).length,
+    }),
     setTime,
     buildAnalysisFrames: () => buildAnalysisFrames({
       metadata,
@@ -639,6 +671,8 @@ function computeContactBaselines({ metadata, mixer, root, chains }) {
 function createEmptyIkHelpers() {
   return {
     enabled: false,
+    chains: [],
+    referenceMap: null,
     targets: new Map(),
     poles: new Map(),
     limbs: new Map(),
@@ -647,9 +681,115 @@ function createEmptyIkHelpers() {
   };
 }
 
+function createEmptySkeletonVisual() {
+  return {
+    enabled: false,
+    line: null,
+    positions: null,
+    segments: [],
+    referenceMap: null,
+  };
+}
+
+function createSkeletonLineOverlay(overlayRoot, bones) {
+  const segments = bones
+    .filter((bone) => bone.parent?.isBone)
+    .map((bone) => ({
+      bone,
+      parentBone: bone.parent,
+      referenceBone: null,
+      referenceParentBone: null,
+    }));
+  const positions = new Float32Array(segments.length * 2 * 3);
+  const geometry = new THREE.BufferGeometry();
+  const material = new THREE.LineBasicMaterial({
+    color: SKELETON_OVERLAY_COLOR,
+    depthTest: false,
+    transparent: true,
+    opacity: 0.92,
+  });
+  const line = new THREE.LineSegments(geometry, material);
+
+  geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  line.name = 'BVH skeleton aligned to GLB';
+  line.renderOrder = 70;
+  line.frustumCulled = false;
+  overlayRoot.add(line);
+
+  return {
+    enabled: true,
+    line,
+    positions,
+    segments,
+    referenceMap: null,
+  };
+}
+
+function setSkeletonReferenceModel(skeletonVisual, model) {
+  if (!skeletonVisual.enabled || !model) {
+    return;
+  }
+
+  const referenceMap = createObjectMap(model);
+
+  skeletonVisual.referenceMap = referenceMap;
+  skeletonVisual.segments.forEach((segment) => {
+    segment.referenceBone = referenceMap.get(segment.bone.name) ?? null;
+    segment.referenceParentBone = referenceMap.get(segment.parentBone.name) ?? null;
+  });
+}
+
+function updateSkeletonLineOverlay(skeletonVisual, root) {
+  if (!skeletonVisual.enabled || !skeletonVisual.line) {
+    return;
+  }
+
+  const sourcePosition = new THREE.Vector3();
+  const targetPosition = new THREE.Vector3();
+
+  skeletonVisual.segments.forEach((segment, index) => {
+    const parentSource = segment.referenceParentBone ?? segment.parentBone;
+    const childSource = segment.referenceBone ?? segment.bone;
+
+    parentSource.getWorldPosition(sourcePosition);
+    childSource.getWorldPosition(targetPosition);
+
+    const parent = toRootLocal(root, sourcePosition);
+    const child = toRootLocal(root, targetPosition);
+    const offset = index * 6;
+
+    skeletonVisual.positions[offset] = parent.x;
+    skeletonVisual.positions[offset + 1] = parent.y;
+    skeletonVisual.positions[offset + 2] = parent.z;
+    skeletonVisual.positions[offset + 3] = child.x;
+    skeletonVisual.positions[offset + 4] = child.y;
+    skeletonVisual.positions[offset + 5] = child.z;
+  });
+
+  skeletonVisual.line.geometry.attributes.position.needsUpdate = true;
+  skeletonVisual.line.geometry.computeBoundingSphere();
+}
+
+function createObjectMap(root) {
+  const map = new Map();
+
+  root.traverse((object) => {
+    if (!object.name) {
+      return;
+    }
+
+    map.set(object.name, object);
+    map.set(stripNamespace(object.name), object);
+  });
+
+  return map;
+}
+
 function createIkHelpers(overlayRoot, chains) {
   const helpers = {
     enabled: true,
+    chains,
+    referenceMap: null,
     targets: new Map(),
     poles: new Map(),
     limbs: new Map(),
@@ -686,53 +826,89 @@ function createIkHelpers(overlayRoot, chains) {
   return helpers;
 }
 
+function setIkReferenceModel(helpers, model) {
+  if (!helpers.enabled || !model) {
+    return;
+  }
+
+  const referenceMap = createObjectMap(model);
+
+  helpers.referenceMap = referenceMap;
+  helpers.chains.forEach((chain) => {
+    chain.referenceRootBone = referenceMap.get(chain.rootBone.name) ?? null;
+    chain.referenceMidBone = referenceMap.get(chain.midBone.name) ?? null;
+    chain.referenceEndBone = referenceMap.get(chain.endBone.name) ?? null;
+    chain.referenceToeBone = chain.toeBone ? referenceMap.get(chain.toeBone.name) ?? null : null;
+  });
+}
+
 function updateIkHelpers(helpers, frame, root) {
   if (!helpers.enabled) {
     return;
   }
 
   Object.entries(frame.targets).forEach(([id, target]) => {
+    const chain = helpers.chains.find((item) => item.targetId === id);
     const marker = helpers.targets.get(id);
     const limbLine = helpers.limbs.get(target.chainId);
     const toeLine = helpers.toeLines.get(target.chainId);
+    const rootPosition = getDisplayPosition(chain?.referenceRootBone, target.rootPosition);
+    const midPosition = getDisplayPosition(chain?.referenceMidBone, target.midPosition);
+    const targetPosition = getDisplayPosition(chain?.referenceEndBone, target.position);
+    const toePosition = getDisplayPosition(chain?.referenceToeBone, target.toePosition);
 
     if (marker) {
-      marker.position.copy(toRootLocal(root, target.position));
+      marker.position.copy(toRootLocal(root, targetPosition));
       marker.userData.contact = target.contact;
       marker.material.color.setHex(target.contact ? 0xffffff : marker.userData.baseColor);
     }
 
     if (limbLine) {
       setLinePoints(limbLine, [
-        toRootLocal(root, target.rootPosition),
-        toRootLocal(root, target.midPosition),
-        toRootLocal(root, target.position),
+        toRootLocal(root, rootPosition),
+        toRootLocal(root, midPosition),
+        toRootLocal(root, targetPosition),
       ]);
     }
 
-    if (toeLine && target.toePosition) {
+    if (toeLine && toePosition) {
       setLinePoints(toeLine, [
-        toRootLocal(root, target.position),
-        toRootLocal(root, target.toePosition),
+        toRootLocal(root, targetPosition),
+        toRootLocal(root, toePosition),
       ]);
     }
   });
 
   Object.entries(frame.poles).forEach(([id, pole]) => {
+    const chain = helpers.chains.find((item) => item.poleId === id);
     const marker = helpers.poles.get(id);
     const poleLine = helpers.poleLines.get(pole.chainId);
+    const rootPosition = getDisplayPosition(chain?.referenceRootBone, pole.rootPosition);
+    const midPosition = getDisplayPosition(chain?.referenceMidBone, pole.midPosition);
+    const endPosition = getDisplayPosition(chain?.referenceEndBone, pole.endPosition);
+    const polePosition = chain?.referenceRootBone && chain?.referenceMidBone && chain?.referenceEndBone
+      ? computePoleTransform(rootPosition, midPosition, endPosition).position
+      : pole.position;
 
     if (marker) {
-      marker.position.copy(toRootLocal(root, pole.position));
+      marker.position.copy(toRootLocal(root, polePosition));
     }
 
     if (poleLine) {
       setLinePoints(poleLine, [
-        toRootLocal(root, pole.midPosition),
-        toRootLocal(root, pole.position),
+        toRootLocal(root, midPosition),
+        toRootLocal(root, polePosition),
       ]);
     }
   });
+}
+
+function getDisplayPosition(referenceBone, fallbackPosition) {
+  if (referenceBone) {
+    return referenceBone.getWorldPosition(new THREE.Vector3());
+  }
+
+  return fallbackPosition?.clone?.() ?? fallbackPosition ?? new THREE.Vector3();
 }
 
 function buildAnalysisFrames({ metadata, contactBaselines, setTime, getRestoreTime }) {
