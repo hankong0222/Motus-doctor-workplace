@@ -10,13 +10,24 @@
     <canvas id="gym-canvas" aria-label="Motus gym 3D scene"></canvas>
     <aside class="video-panel" aria-label="Reference video">
       <video id="reference-video" class="video-panel__media" autoplay muted loop playsinline preload="auto">
-        <source src="/asset/reference-motion.webm" type="video/webm" />
+        <source src="/asset/reference-motion-h264.mp4" type="video/mp4" />
       </video>
     </aside>
     <div class="hud" aria-live="polite">
       <span class="hud__title">Motus Gym</span>
       <span class="hud__status" id="scene-status">Loading model</span>
     </div>
+    <aside class="ik-debug-panel" aria-label="BVH IK and gait analysis debug">
+      <div class="ik-debug-panel__header">
+        <span class="ik-debug-panel__title">BVH IK / Gait</span>
+        <span class="ik-debug-panel__status" id="ik-debug-status">Loading BVH</span>
+      </div>
+      <pre id="ik-debug-readout" class="ik-debug-readout">Waiting for BVH analysis</pre>
+      <div class="ik-debug-panel__actions">
+        <button id="ik-export-json" class="ik-debug-button" type="button" disabled>JSON</button>
+        <button id="ik-export-csv" class="ik-debug-button" type="button" disabled>CSV</button>
+      </div>
+    </aside>
     <section class="timeline-panel" aria-label="Playback timeline">
       <button id="play-toggle" class="timeline-button timeline-button--primary" type="button">Pause</button>
       <button id="step-back" class="timeline-button" type="button" aria-label="Previous frame">-1f</button>
