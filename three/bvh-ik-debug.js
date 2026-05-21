@@ -35,6 +35,7 @@ const JOINT_ANGLE_ARC_DEFINITIONS = [
 ];
 
 const AXIS_TRAIL_SMOOTHING = 3;
+const AXIS_TRAIL_REPLAY_RESET_FRAME_GAP = 5;
 const AXIS_TRAIL_DEFINITIONS = [
   { id: 'pelvisForward', frameId: 'pelvis', axis: 'z', color: 0x4d8dff, scale: 0.42, maxPoints: 2400, minDistance: 0.003, radius: 0.018 },
   { id: 'leftFootForward', frameId: 'leftFoot', axis: 'z', color: 0x85f06c, scale: 0.22, maxPoints: 2400, minDistance: 0.003, radius: 0.014 },
@@ -1201,6 +1202,7 @@ function createAxisTrails(overlayRoot, metadata) {
     enabled: true,
     trails: new Map(),
     referenceMap: null,
+    lastFrameIndex: null,
   };
 
   AXIS_TRAIL_DEFINITIONS.forEach((definition) => {
@@ -1250,6 +1252,8 @@ function setAxisTrailReferenceModel(axisTrails, model) {
 }
 
 function clearAxisTrails(axisTrails) {
+  axisTrails.lastFrameIndex = null;
+
   axisTrails.trails.forEach((trail) => {
     trail.pointsByFrame.clear();
     trail.mesh.geometry.dispose();
@@ -1276,6 +1280,12 @@ function updateAxisTrails(axisTrails, frame, root) {
     ? sampleAnatomicalCoordinateSystem(axisTrails.referenceMap).frames
     : frame.anatomicalFrames;
 
+  if (shouldClearAxisTrailsForReplay(axisTrails, frame.frameIndex)) {
+    clearAxisTrails(axisTrails);
+  }
+
+  axisTrails.lastFrameIndex = frame.frameIndex;
+
   axisTrails.trails.forEach((trail) => {
     const point = getAxisTrailPoint(trail.definition, displayFrames);
 
@@ -1287,6 +1297,11 @@ function updateAxisTrails(axisTrails, frame, root) {
     appendAxisTrailPoint(trail, point, frame.frameIndex, frame.frameCount);
     updateAxisTrailLine(trail, root);
   });
+}
+
+function shouldClearAxisTrailsForReplay(axisTrails, frameIndex) {
+  return axisTrails.lastFrameIndex !== null
+    && frameIndex + AXIS_TRAIL_REPLAY_RESET_FRAME_GAP < axisTrails.lastFrameIndex;
 }
 
 function getAxisTrailPoint(definition, frames) {
