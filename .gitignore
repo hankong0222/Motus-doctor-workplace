@@ -1,0 +1,6 @@
+venv
+node_modules
+dist
+.vite-dev.log
+.vite-dev.err
+
