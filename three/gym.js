@@ -71,8 +71,10 @@ function createLightRig() {
 function createGridFloor(floorSize) {
   const group = new THREE.Group();
   const size = Math.max(72, Math.round(floorSize));
-  const divisions = Math.max(1, Math.round(size / 2));
-  const majorDivisions = Math.max(1, Math.round(size / 12));
+  const gridSpacing = 1;
+  const majorGridSpacing = 6;
+  const divisions = Math.max(1, Math.round(size / gridSpacing));
+  const majorDivisions = Math.max(1, Math.round(size / majorGridSpacing));
 
   const floor = new THREE.Mesh(
     new THREE.PlaneGeometry(size, size),
@@ -91,13 +93,13 @@ function createGridFloor(floorSize) {
   const grid = new THREE.GridHelper(size, divisions, 0x8d8d8d, 0x3f433f);
   grid.name = 'Reference grid';
   grid.position.y = 0.003;
-  followCameraOnXZ(grid, 2);
+  followCameraOnXZ(grid, gridSpacing);
   group.add(grid);
 
   const majorGrid = new THREE.GridHelper(size, majorDivisions, 0xaaaaaa, 0x575c57);
   majorGrid.name = 'Major reference grid';
   majorGrid.position.y = 0.006;
-  followCameraOnXZ(majorGrid, 12);
+  followCameraOnXZ(majorGrid, majorGridSpacing);
   group.add(majorGrid);
 
   return group;
