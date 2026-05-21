@@ -23,7 +23,7 @@ body {
   touch-action: none;
 }
 
-.bvh-toggle {
+.visual-toggle {
   position: fixed;
   top: 16px;
   left: 16px;
@@ -42,18 +42,29 @@ body {
   cursor: pointer;
 }
 
-.bvh-toggle:hover {
+.visual-toggle:hover {
   background: #d3f0dc;
 }
 
-.bvh-toggle[aria-pressed="false"] {
+.visual-toggle[aria-pressed="false"] {
   background: rgb(8 9 8 / 72%);
   color: #f4f6ef;
   backdrop-filter: blur(12px);
 }
 
-.bvh-toggle[aria-pressed="false"]:hover {
+.visual-toggle[aria-pressed="false"]:hover {
   background: rgb(244 246 239 / 14%);
+}
+
+.body-axis-toggle {
+  top: 58px;
+  min-width: 116px;
+  background: #4d8dff;
+  color: #f4f6ef;
+}
+
+.body-axis-toggle:hover {
+  background: #6ea4ff;
 }
 
 .video-panel {

@@ -42,20 +42,34 @@ const ikDebugReadout = document.querySelector('#ik-debug-readout');
 const ikExportJson = document.querySelector('#ik-export-json');
 const ikExportCsv = document.querySelector('#ik-export-csv');
 const bvhVisualToggle = document.querySelector('#bvh-visual-toggle');
+const bodyAxisToggle = document.querySelector('#body-axis-toggle');
 
 const three = createThreeScene(canvas);
 const gym = createGymEnvironment();
-const bvhIkDebug = createBvhIkDebug({ showSkeleton: true, showIkHelpers: true });
+const bvhIkDebug = createBvhIkDebug({
+  showSkeleton: true,
+  showIkHelpers: false,
+  showAxisGizmos: true,
+  showAngleArcs: true,
+  showAxisTrails: true,
+});
 const followTargetPosition = new THREE.Vector3();
 const desiredTarget = new THREE.Vector3();
 const nextTarget = new THREE.Vector3();
 const targetDelta = new THREE.Vector3();
 const cameraOffset = new THREE.Vector3(3.4, 1.85, 5.2);
+const cameraPanForward = new THREE.Vector3();
+const cameraPanRight = new THREE.Vector3();
+const cameraPanDelta = new THREE.Vector3();
+const CAMERA_RECENTER_DELAY = 2.5;
+const CAMERA_KEY_PAN_STEP = 0.48;
 let followTarget = null;
 let fpsElapsed = 0;
 let fpsFrames = 0;
 let latestFps = 0;
 let playAttemptId = 0;
+let cameraFollowResumeAt = 0;
+let isShiftPanningCamera = false;
 
 const timeline = {
   animationDuration: 0,
@@ -81,11 +95,13 @@ video.defaultMuted = true;
 video.setAttribute('muted', '');
 video.loop = true;
 video.playbackRate = timeline.speed;
+canvas.tabIndex = 0;
 
 let bvhIkRuntime = null;
 let glbReferenceModel = null;
 let latestIkReadoutFrame = -1;
 let bvhVisualsVisible = true;
+let bodyAxisVisible = true;
 
 three.scene.add(gym.lightRig, gym.gridFloor, bvhIkDebug.root);
 three.start(({ delta }) => {
@@ -93,6 +109,12 @@ three.start(({ delta }) => {
   updatePlayback(delta);
   updateCameraFollow(delta);
 });
+
+canvas.addEventListener('pointerdown', handleCameraPointerDown);
+window.addEventListener('pointerup', handleCameraPointerEnd);
+window.addEventListener('pointercancel', handleCameraPointerEnd);
+window.addEventListener('blur', handleCameraPointerEnd);
+document.addEventListener('keydown', handleCameraKeyDown);
 
 video.addEventListener('loadedmetadata', handleVideoMetadataLoaded);
 
@@ -170,6 +192,10 @@ bvhVisualToggle.addEventListener('click', () => {
   setBvhVisualsVisible(!bvhVisualsVisible);
 });
 
+bodyAxisToggle.addEventListener('click', () => {
+  setBodyAxisVisible(!bodyAxisVisible);
+});
+
 document.addEventListener('keydown', (event) => {
   if (!isBvhToggleShortcut(event)) {
     return;
@@ -221,6 +247,7 @@ bvhIkDebug.ready
     });
 
     updateIkDebugStatus();
+    applyDebugVisualVisibility();
     ikExportJson.disabled = false;
     ikExportCsv.disabled = false;
     if (glbReferenceModel) {
@@ -275,6 +302,10 @@ function updateCameraFollow(delta) {
     return;
   }
 
+  if (getNowSeconds() < cameraFollowResumeAt) {
+    return;
+  }
+
   followTarget.getWorldPosition(followTargetPosition);
   desiredTarget.set(followTargetPosition.x, 1.35, followTargetPosition.z);
 
@@ -285,11 +316,107 @@ function updateCameraFollow(delta) {
   three.camera.position.add(targetDelta);
 }
 
+function handleCameraPointerDown(event) {
+  canvas.focus({ preventScroll: true });
+
+  if (event.button !== 0 || !event.shiftKey) {
+    return;
+  }
+
+  isShiftPanningCamera = true;
+  cameraFollowResumeAt = Number.POSITIVE_INFINITY;
+}
+
+function handleCameraPointerEnd() {
+  if (!isShiftPanningCamera) {
+    return;
+  }
+
+  isShiftPanningCamera = false;
+  scheduleCameraFollowResume();
+}
+
+function handleCameraKeyDown(event) {
+  if (!isCameraPanKey(event) || shouldIgnoreCameraKeyPan(event)) {
+    return;
+  }
+
+  event.preventDefault();
+  panCameraByKey(event.key);
+  scheduleCameraFollowResume();
+  three.controls.update();
+}
+
+function panCameraByKey(key) {
+  const distance = getCameraKeyPanDistance();
+
+  cameraPanForward.subVectors(three.controls.target, three.camera.position);
+  cameraPanForward.y = 0;
+
+  if (cameraPanForward.lengthSq() < 0.0001) {
+    cameraPanForward.set(0, 0, -1);
+  } else {
+    cameraPanForward.normalize();
+  }
+
+  cameraPanRight.crossVectors(cameraPanForward, three.camera.up).normalize();
+  cameraPanDelta.set(0, 0, 0);
+
+  if (key === 'ArrowUp') {
+    cameraPanDelta.addScaledVector(cameraPanForward, distance);
+  } else if (key === 'ArrowDown') {
+    cameraPanDelta.addScaledVector(cameraPanForward, -distance);
+  } else if (key === 'ArrowLeft') {
+    cameraPanDelta.addScaledVector(cameraPanRight, -distance);
+  } else if (key === 'ArrowRight') {
+    cameraPanDelta.addScaledVector(cameraPanRight, distance);
+  }
+
+  three.controls.target.add(cameraPanDelta);
+  three.camera.position.add(cameraPanDelta);
+}
+
+function getCameraKeyPanDistance() {
+  const cameraDistance = three.camera.position.distanceTo(three.controls.target);
+  return Math.min(Math.max(cameraDistance * 0.08, CAMERA_KEY_PAN_STEP), 1.4);
+}
+
+function isCameraPanKey(event) {
+  return event.key === 'ArrowUp'
+    || event.key === 'ArrowDown'
+    || event.key === 'ArrowLeft'
+    || event.key === 'ArrowRight';
+}
+
+function shouldIgnoreCameraKeyPan(event) {
+  if (event.altKey || event.ctrlKey || event.metaKey) {
+    return true;
+  }
+
+  const target = event.target;
+
+  return target instanceof HTMLInputElement
+    || target instanceof HTMLSelectElement
+    || target instanceof HTMLTextAreaElement
+    || target?.isContentEditable;
+}
+
+function scheduleCameraFollowResume() {
+  cameraFollowResumeAt = timeline.isPlaying
+    ? getNowSeconds() + CAMERA_RECENTER_DELAY
+    : Number.POSITIVE_INFINITY;
+}
+
+function getNowSeconds() {
+  return performance.now() / 1000;
+}
+
 function setPlaying(isPlaying) {
   timeline.isPlaying = isPlaying;
   updatePlayButton();
 
   if (!isPlaying) {
+    cameraFollowResumeAt = Number.POSITIVE_INFINITY;
     playAttemptId += 1;
     video.pause();
     syncFrameFromVideo();
@@ -298,6 +425,7 @@ function setPlaying(isPlaying) {
   }
 
   timeline.manualClock = false;
+  scheduleCameraFollowResume();
   tryPlayVideo();
 }
 
@@ -598,10 +726,28 @@ function isTextInputTarget(target) {
 
 function setBvhVisualsVisible(isVisible) {
   bvhVisualsVisible = isVisible;
-  bvhIkDebug.root.visible = bvhVisualsVisible;
   bvhVisualToggle.textContent = bvhVisualsVisible ? 'BVH On' : 'BVH Off';
   bvhVisualToggle.setAttribute('aria-pressed', String(bvhVisualsVisible));
+  applyDebugVisualVisibility();
   updateIkDebugStatus();
+}
+
+function setBodyAxisVisible(isVisible) {
+  bodyAxisVisible = isVisible;
+  bodyAxisToggle.textContent = bodyAxisVisible ? 'Body Axis On' : 'Body Axis Off';
+  bodyAxisToggle.setAttribute('aria-pressed', String(bodyAxisVisible));
+  applyDebugVisualVisibility();
+  updateIkDebugStatus();
+}
+
+function applyDebugVisualVisibility() {
+  if (!bvhIkRuntime) {
+    bvhIkDebug.root.visible = bvhVisualsVisible || bodyAxisVisible;
+    return;
+  }
+
+  bvhIkRuntime.setSkeletonVisible?.(bvhVisualsVisible);
+  bvhIkRuntime.setBodyAxisVisible?.(bodyAxisVisible);
 }
 
 function updateIkDebugStatus() {
@@ -610,7 +756,7 @@ function updateIkDebugStatus() {
     return;
   }
 
-  ikDebugStatus.textContent = `${bvhIkRuntime.metadata.frames}f / ${bvhIkRuntime.metadata.bones} bones / ${bvhVisualsVisible ? 'on' : 'off'}`;
+  ikDebugStatus.textContent = `${bvhIkRuntime.metadata.frames}f / ${bvhIkRuntime.metadata.bones} bones / BVH ${bvhVisualsVisible ? 'on' : 'off'} / axis ${bodyAxisVisible ? 'on' : 'off'}`;
 }
 
 function updateIkDebugUi(frame, force = false) {
@@ -643,6 +789,19 @@ function formatIkDebugReadout(frame) {
     formatSideAngles('L', left),
     formatSideAngles('R', right),
     '',
+    'Anatomical Joint Angles',
+    formatAnatomicalSide('L', frame.anatomicalJointAngles.left),
+    formatAnatomicalSide('R', frame.anatomicalJointAngles.right),
+    '',
+    'Anatomical Frames',
+    formatAnatomicalFrame('Pelvis', frame.anatomicalFrames.pelvis),
+    formatAnatomicalFrame('L femur', frame.anatomicalFrames.leftFemur),
+    formatAnatomicalFrame('L tibia', frame.anatomicalFrames.leftTibia),
+    formatAnatomicalFrame('L foot', frame.anatomicalFrames.leftFoot),
+    formatAnatomicalFrame('R femur', frame.anatomicalFrames.rightFemur),
+    formatAnatomicalFrame('R tibia', frame.anatomicalFrames.rightTibia),
+    formatAnatomicalFrame('R foot', frame.anatomicalFrames.rightFoot),
+    '',
     'IK Targets',
     formatTarget('L hand', frame.targets.leftHand),
     formatTarget('R hand', frame.targets.rightHand),
@@ -662,6 +821,43 @@ function formatIkDebugReadout(frame) {
     ...DEBUG_LOCAL_ROTATION_JOINTS.map((joint) => (
       `${padLabel(joint)} ${formatEulerDeg(frame.jointRotations[joint]?.eulerDeg)}`
     )),
+  ].join('\n');
+}
+
+function formatAnatomicalSide(label, sideAngles) {
+  if (!sideAngles) {
+    return `${label} anatomical n/a`;
+  }
+
+  return [
+    `${label} hip ${formatAnatomicalJoint(sideAngles.hip)}`,
+    `${label} knee ${formatAnatomicalJoint(sideAngles.knee)}`,
+    `${label} ankle ${formatAnatomicalJoint(sideAngles.ankle)}`,
+  ].join('\n');
+}
+
+function formatAnatomicalJoint(angles) {
+  if (!angles) {
+    return 'n/a';
+  }
+
+  return [
+    `FE ${formatDeg(angles.flexionExtensionDeg)}`,
+    `AA ${formatDeg(angles.abductionAdductionDeg)}`,
+    `IE ${formatDeg(angles.internalExternalRotationDeg)}`,
+  ].join('  ');
+}
+
+function formatAnatomicalFrame(label, anatomicalFrame) {
+  if (!anatomicalFrame) {
+    return `${padLabel(label)} n/a`;
+  }
+
+  return [
+    `${padLabel(label)} O ${formatVector(anatomicalFrame.origin)}`,
+    `  X ${formatVector(anatomicalFrame.axes.x)}`,
+    `  Y ${formatVector(anatomicalFrame.axes.y)}`,
+    `  Z ${formatVector(anatomicalFrame.axes.z)}`,
   ].join('\n');
 }
 

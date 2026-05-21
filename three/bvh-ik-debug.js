@@ -7,6 +7,39 @@ const DEFAULT_BVH_SCALE = 0.01;
 const FOOT_CONTACT_THRESHOLD = 0.055;
 const EPSILON = 0.000001;
 const SKELETON_OVERLAY_COLOR = 0xfff176;
+const AXIS_COLORS = {
+  x: 0xff4d4d,
+  y: 0x58d86f,
+  z: 0x4d8dff,
+};
+
+const ANATOMICAL_GIZMO_DEFINITIONS = [
+  { id: 'pelvis', label: 'Pelvis', length: 0.26, labels: { x: 'LR', y: 'Up', z: 'Fwd' } },
+  { id: 'leftFemur', label: 'L femur', length: 0.2 },
+  { id: 'leftTibia', label: 'L tibia', length: 0.2 },
+  { id: 'leftFoot', label: 'L foot', length: 0.18, labels: { x: 'roll', y: 'normal', z: 'toe' } },
+  { id: 'rightFemur', label: 'R femur', length: 0.2 },
+  { id: 'rightTibia', label: 'R tibia', length: 0.2 },
+  { id: 'rightFoot', label: 'R foot', length: 0.18, labels: { x: 'roll', y: 'normal', z: 'toe' } },
+];
+
+const JOINT_ANGLE_ARC_SEGMENTS = 32;
+const JOINT_ANGLE_ARC_DEFINITIONS = [
+  { id: 'leftHipFlexion', side: 'left', joint: 'hip', type: 'flexion', color: 0x4dd2ff, radiusScale: 0.24 },
+  { id: 'leftKneeFlexion', side: 'left', joint: 'knee', type: 'flexion', color: 0x69a7ff, radiusScale: 0.32 },
+  { id: 'leftAnkleFlexion', side: 'left', joint: 'ankle', type: 'flexion', color: 0x85f06c, radiusScale: 0.34 },
+  { id: 'rightHipFlexion', side: 'right', joint: 'hip', type: 'flexion', color: 0xff9f80, radiusScale: 0.24 },
+  { id: 'rightKneeFlexion', side: 'right', joint: 'knee', type: 'flexion', color: 0xff6b6b, radiusScale: 0.32 },
+  { id: 'rightAnkleFlexion', side: 'right', joint: 'ankle', type: 'flexion', color: 0xffd166, radiusScale: 0.34 },
+  { id: 'pelvisRotation', joint: 'pelvis', type: 'rotation', color: 0xb78cff, radiusScale: 0.36 },
+];
+
+const AXIS_TRAIL_SMOOTHING = 3;
+const AXIS_TRAIL_DEFINITIONS = [
+  { id: 'pelvisForward', frameId: 'pelvis', axis: 'z', color: 0x4d8dff, scale: 0.42, maxPoints: 2400, minDistance: 0.003, radius: 0.018 },
+  { id: 'leftFootForward', frameId: 'leftFoot', axis: 'z', color: 0x85f06c, scale: 0.22, maxPoints: 2400, minDistance: 0.003, radius: 0.014 },
+  { id: 'rightFootForward', frameId: 'rightFoot', axis: 'z', color: 0xffd166, scale: 0.22, maxPoints: 2400, minDistance: 0.003, radius: 0.014 },
+];
 
 const GAIT_SIDES = [
   {
@@ -20,6 +53,23 @@ const GAIT_SIDES = [
   {
     id: 'right',
     label: 'Right',
+    hip: 'RightUpLeg',
+    knee: 'RightLeg',
+    ankle: 'RightFoot',
+    toe: 'RightToeBase',
+  },
+];
+
+const ANATOMICAL_FRAME_SIDES = [
+  {
+    id: 'left',
+    hip: 'LeftUpLeg',
+    knee: 'LeftLeg',
+    ankle: 'LeftFoot',
+    toe: 'LeftToeBase',
+  },
+  {
+    id: 'right',
     hip: 'RightUpLeg',
     knee: 'RightLeg',
     ankle: 'RightFoot',
@@ -87,6 +137,9 @@ export function createBvhIkDebug({
   scale = DEFAULT_BVH_SCALE,
   showSkeleton = false,
   showIkHelpers = false,
+  showAxisGizmos = false,
+  showAngleArcs = false,
+  showAxisTrails = false,
   showVisuals = false,
 } = {}) {
   const root = new THREE.Group();
@@ -97,9 +150,16 @@ export function createBvhIkDebug({
   const visualOptions = {
     showSkeleton: showVisuals || showSkeleton,
     showIkHelpers: showVisuals || showIkHelpers,
+    showAxisGizmos: showVisuals || showAxisGizmos,
+    showAngleArcs: showVisuals || showAngleArcs,
+    showAxisTrails: showVisuals || showAxisTrails,
   };
 
-  root.visible = visualOptions.showSkeleton || visualOptions.showIkHelpers;
+  root.visible = visualOptions.showSkeleton
+    || visualOptions.showIkHelpers
+    || visualOptions.showAxisGizmos
+    || visualOptions.showAngleArcs
+    || visualOptions.showAxisTrails;
   skeletonRoot.name = 'BVH calculation source';
   skeletonRoot.scale.setScalar(scale);
   overlayRoot.name = 'IK target debug overlay';
@@ -156,6 +216,15 @@ async function loadBvhIkDebug({ url, root, skeletonRoot, overlayRoot, visualOpti
   const skeletonVisual = visualOptions.showSkeleton
     ? createSkeletonLineOverlay(overlayRoot, skeleton.bones)
     : createEmptySkeletonVisual();
+  const frameGizmos = visualOptions.showAxisGizmos
+    ? createAnatomicalFrameGizmos(overlayRoot)
+    : createEmptyFrameGizmos();
+  const angleArcs = visualOptions.showAngleArcs
+    ? createJointAngleArcs(overlayRoot)
+    : createEmptyAngleArcs();
+  const axisTrails = visualOptions.showAxisTrails
+    ? createAxisTrails(overlayRoot, metadata)
+    : createEmptyAxisTrails();
 
   alignSkeletonRoot(skeletonRoot, rootBone, skeleton.bones);
   root.updateMatrixWorld(true);
@@ -167,7 +236,7 @@ async function loadBvhIkDebug({ url, root, skeletonRoot, overlayRoot, visualOpti
     chains,
   });
   let currentFrame = null;
-  const setTime = (time) => {
+  const setTime = (time, { updateVisuals = true } = {}) => {
     const clipTime = wrapClipTime(time, clip.duration, metadata.frameTime);
 
     mixer.setTime(clipTime);
@@ -183,12 +252,25 @@ async function loadBvhIkDebug({ url, root, skeletonRoot, overlayRoot, visualOpti
       contactBaselines,
       chains,
     });
-    updateIkHelpers(helpers, currentFrame, root);
-    updateSkeletonLineOverlay(skeletonVisual, root);
+    if (updateVisuals) {
+      updateIkHelpers(helpers, currentFrame, root);
+      updateSkeletonLineOverlay(skeletonVisual, root);
+      updateAnatomicalFrameGizmos(frameGizmos, currentFrame, root);
+      updateJointAngleArcs(angleArcs, currentFrame, root);
+      updateAxisTrails(axisTrails, currentFrame, root);
+    }
     return currentFrame;
   };
 
   currentFrame = setTime(0);
+
+  const refreshRootVisibility = () => {
+    root.visible = skeletonVisual.enabled
+      || helpers.enabled
+      || frameGizmos.enabled
+      || angleArcs.enabled
+      || axisTrails.enabled;
+  };
 
   return {
     action,
@@ -203,17 +285,42 @@ async function loadBvhIkDebug({ url, root, skeletonRoot, overlayRoot, visualOpti
     setReferenceModel: (model) => {
       setSkeletonReferenceModel(skeletonVisual, model);
       setIkReferenceModel(helpers, model);
+      setFrameGizmoReferenceModel(frameGizmos, model);
+      setAngleArcReferenceModel(angleArcs, model);
+      setAxisTrailReferenceModel(axisTrails, model);
       updateSkeletonLineOverlay(skeletonVisual, root);
+      updateAnatomicalFrameGizmos(frameGizmos, currentFrame, root);
+      updateJointAngleArcs(angleArcs, currentFrame, root);
+      updateAxisTrails(axisTrails, currentFrame, root);
     },
     setSkeletonVisible: (visible) => {
       skeletonVisual.enabled = Boolean(visible);
       if (skeletonVisual.line) {
         skeletonVisual.line.visible = skeletonVisual.enabled;
       }
-      root.visible = skeletonVisual.enabled || helpers.enabled;
+      refreshRootVisibility();
+    },
+    setBodyAxisVisible: (visible) => {
+      const enabled = Boolean(visible);
+
+      setFrameGizmosVisible(frameGizmos, enabled);
+      setAngleArcsVisible(angleArcs, enabled);
+      setAxisTrailsVisible(axisTrails, enabled);
+
+      if (enabled) {
+        updateAnatomicalFrameGizmos(frameGizmos, currentFrame, root);
+        updateJointAngleArcs(angleArcs, currentFrame, root);
+        updateAxisTrails(axisTrails, currentFrame, root);
+      }
+
+      refreshRootVisibility();
     },
     getVisualState: () => ({
       skeletonEnabled: skeletonVisual.enabled,
+      frameGizmosEnabled: frameGizmos.enabled,
+      angleArcsEnabled: angleArcs.enabled,
+      axisTrailsEnabled: axisTrails.enabled,
+      bodyAxisEnabled: frameGizmos.enabled || angleArcs.enabled || axisTrails.enabled,
       skeletonSegments: skeletonVisual.segments.length,
       glbAlignedSegments: skeletonVisual.segments.filter(
         (segment) => segment.referenceBone && segment.referenceParentBone,
@@ -418,6 +525,7 @@ function sampleIkFrame({
   const targets = {};
   const poles = {};
   const gaitAngles = sampleGaitAngles(boneMap, contactBaselines);
+  const anatomical = sampleAnatomicalCoordinateSystem(boneMap);
   const jointRotations = sampleLocalJointRotations(bones);
   const bvhChannels = sampleBvhChannels(channelData, frameIndex);
 
@@ -468,6 +576,9 @@ function sampleIkFrame({
     targets,
     poles,
     gaitAngles,
+    anatomicalLandmarks: anatomical.landmarks,
+    anatomicalFrames: anatomical.frames,
+    anatomicalJointAngles: anatomical.jointAngles,
     jointRotations,
     bvhChannels,
     contactBaselines,
@@ -548,6 +659,198 @@ function sampleGaitAngles(boneMap, contactBaselines) {
   });
 
   return sides;
+}
+
+function sampleAnatomicalCoordinateSystem(boneMap) {
+  const landmarks = createAnatomicalLandmarks(boneMap);
+  const pelvis = createPelvisFrame(landmarks);
+  const frames = { pelvis };
+  const jointAngles = {};
+
+  ANATOMICAL_FRAME_SIDES.forEach((side) => {
+    frames[`${side.id}Femur`] = createFemurFrame(side.id, landmarks, pelvis);
+    frames[`${side.id}Tibia`] = createTibiaFrame(side.id, landmarks, pelvis);
+    frames[`${side.id}Foot`] = createFootFrame(side.id, landmarks, pelvis);
+
+    jointAngles[side.id] = {
+      hip: calculateAnatomicalJointAngles(pelvis, frames[`${side.id}Femur`]),
+      knee: calculateAnatomicalJointAngles(frames[`${side.id}Femur`], frames[`${side.id}Tibia`]),
+      ankle: calculateAnatomicalJointAngles(frames[`${side.id}Tibia`], frames[`${side.id}Foot`]),
+    };
+  });
+
+  return {
+    landmarks,
+    frames,
+    jointAngles,
+  };
+}
+
+function createAnatomicalLandmarks(boneMap) {
+  const landmarks = {
+    pelvis: sampleOptionalPosition(boneMap.get('Hips')),
+    spine: sampleOptionalPosition(boneMap.get('Spine')),
+  };
+
+  ANATOMICAL_FRAME_SIDES.forEach((side) => {
+    landmarks[`${side.id}Hip`] = sampleOptionalPosition(boneMap.get(side.hip));
+    landmarks[`${side.id}Knee`] = sampleOptionalPosition(boneMap.get(side.knee));
+    landmarks[`${side.id}Ankle`] = sampleOptionalPosition(boneMap.get(side.ankle));
+    landmarks[`${side.id}Toe`] = sampleOptionalPosition(boneMap.get(side.toe));
+  });
+
+  return landmarks;
+}
+
+// BVH has joint centers, not bony landmarks such as ASIS, epicondyles, or malleoli.
+// These frames are joint-center anatomical approximations for gait-debug analysis.
+export function createPelvisFrame(landmarks) {
+  const origin = landmarks.pelvis;
+  const leftHip = landmarks.leftHip;
+  const rightHip = landmarks.rightHip;
+  const spine = landmarks.spine;
+
+  if (!origin || !leftHip || !rightHip || !spine) {
+    return null;
+  }
+
+  const rightAxisHint = rightHip.clone().sub(leftHip);
+  const superiorAxisHint = spine.clone().sub(origin);
+
+  return createFrameFromXY('pelvis', origin, rightAxisHint, superiorAxisHint);
+}
+
+export function createFemurFrame(side, landmarks, pelvisFrame) {
+  const hip = landmarks[`${side}Hip`];
+  const knee = landmarks[`${side}Knee`];
+
+  if (!hip || !knee || !pelvisFrame) {
+    return null;
+  }
+
+  return createFrameFromXY(
+    `${side}Femur`,
+    hip,
+    pelvisFrame.axes.x,
+    hip.clone().sub(knee),
+  );
+}
+
+export function createTibiaFrame(side, landmarks, pelvisFrame) {
+  const knee = landmarks[`${side}Knee`];
+  const ankle = landmarks[`${side}Ankle`];
+
+  if (!knee || !ankle || !pelvisFrame) {
+    return null;
+  }
+
+  return createFrameFromXY(
+    `${side}Tibia`,
+    knee,
+    pelvisFrame.axes.x,
+    knee.clone().sub(ankle),
+  );
+}
+
+export function createFootFrame(side, landmarks, pelvisFrame) {
+  const ankle = landmarks[`${side}Ankle`];
+  const toe = landmarks[`${side}Toe`];
+
+  if (!ankle || !toe || !pelvisFrame) {
+    return null;
+  }
+
+  return createFrameFromXZ(
+    `${side}Foot`,
+    ankle,
+    pelvisFrame.axes.x,
+    toe.clone().sub(ankle),
+  );
+}
+
+export function calculateAnatomicalJointAngles(proximalFrame, distalFrame) {
+  if (!proximalFrame || !distalFrame) {
+    return null;
+  }
+
+  const relative = proximalFrame.quaternion.clone().invert().multiply(distalFrame.quaternion).normalize();
+  const euler = new THREE.Euler().setFromQuaternion(relative, 'XYZ');
+  const rawEulerXYZDeg = {
+    x: roundAngle(THREE.MathUtils.radToDeg(euler.x)),
+    y: roundAngle(THREE.MathUtils.radToDeg(euler.y)),
+    z: roundAngle(THREE.MathUtils.radToDeg(euler.z)),
+  };
+
+  return {
+    flexionExtensionDeg: rawEulerXYZDeg.x,
+    abductionAdductionDeg: rawEulerXYZDeg.z,
+    internalExternalRotationDeg: rawEulerXYZDeg.y,
+    rawEulerXYZDeg,
+  };
+}
+
+function createFrameFromXY(id, origin, xHint, yHint) {
+  const y = safeNormalize(yHint, new THREE.Vector3(0, 1, 0));
+  let x = rejectVector(xHint, y);
+
+  if (x.lengthSq() <= EPSILON) {
+    x = choosePerpendicular(y);
+  }
+
+  x.normalize();
+
+  const z = x.clone().cross(y).normalize();
+  x.copy(y.clone().cross(z).normalize());
+
+  return createAnatomicalFrame(id, origin, x, y, z);
+}
+
+function createFrameFromXZ(id, origin, xHint, zHint) {
+  const z = safeNormalize(zHint, new THREE.Vector3(0, 0, 1));
+  let x = rejectVector(xHint, z);
+
+  if (x.lengthSq() <= EPSILON) {
+    x = choosePerpendicular(z);
+  }
+
+  x.normalize();
+
+  const y = z.clone().cross(x).normalize();
+  const correctedZ = x.clone().cross(y).normalize();
+
+  return createAnatomicalFrame(id, origin, x, y, correctedZ);
+}
+
+function createAnatomicalFrame(id, origin, xAxis, yAxis, zAxis) {
+  const matrix = new THREE.Matrix4().makeBasis(xAxis, yAxis, zAxis);
+  const quaternion = new THREE.Quaternion().setFromRotationMatrix(matrix);
+
+  return {
+    id,
+    origin: origin.clone(),
+    axes: {
+      x: xAxis.clone(),
+      y: yAxis.clone(),
+      z: zAxis.clone(),
+    },
+    quaternion,
+  };
+}
+
+function rejectVector(vector, normal) {
+  return vector.clone().sub(normal.clone().multiplyScalar(vector.dot(normal)));
+}
+
+function safeNormalize(vector, fallback) {
+  return vector.lengthSq() > EPSILON ? vector.clone().normalize() : fallback.clone();
+}
+
+function choosePerpendicular(axis) {
+  const candidate = Math.abs(axis.dot(new THREE.Vector3(1, 0, 0))) < 0.85
+    ? new THREE.Vector3(1, 0, 0)
+    : new THREE.Vector3(0, 0, 1);
+
+  return rejectVector(candidate, axis).normalize();
 }
 
 function sampleLocalJointRotations(bones) {
@@ -726,7 +1029,7 @@ function createSkeletonLineOverlay(overlayRoot, bones) {
 }
 
 function setSkeletonReferenceModel(skeletonVisual, model) {
-  if (!skeletonVisual.enabled || !model) {
+  if (!skeletonVisual.line || !model) {
     return;
   }
 
@@ -770,6 +1073,536 @@ function updateSkeletonLineOverlay(skeletonVisual, root) {
   skeletonVisual.line.geometry.computeBoundingSphere();
 }
 
+function createEmptyFrameGizmos() {
+  return {
+    enabled: false,
+    gizmos: new Map(),
+    referenceMap: null,
+  };
+}
+
+function createAnatomicalFrameGizmos(overlayRoot) {
+  const frameGizmos = {
+    enabled: true,
+    gizmos: new Map(),
+    referenceMap: null,
+  };
+
+  ANATOMICAL_GIZMO_DEFINITIONS.forEach((definition) => {
+    const gizmo = createAnatomicalFrameGizmo(definition);
+
+    overlayRoot.add(gizmo.group);
+    frameGizmos.gizmos.set(definition.id, gizmo);
+  });
+
+  return frameGizmos;
+}
+
+function createAnatomicalFrameGizmo(definition) {
+  const group = new THREE.Group();
+  const axes = {};
+
+  group.name = `${definition.label} anatomical axis gizmo`;
+
+  ['x', 'y', 'z'].forEach((axis) => {
+    const line = createLine(AXIS_COLORS[axis], 2);
+    const axisLabel = definition.labels?.[axis]
+      ? createTextSprite(`${definition.label} ${definition.labels[axis]}`, AXIS_COLORS[axis], 22, 0.00155)
+      : null;
+
+    line.line.renderOrder = 80;
+    group.add(line.line);
+
+    if (axisLabel) {
+      axisLabel.renderOrder = 90;
+      group.add(axisLabel);
+    }
+
+    axes[axis] = {
+      line,
+      label: axisLabel,
+    };
+  });
+
+  return {
+    definition,
+    group,
+    axes,
+  };
+}
+
+function setFrameGizmoReferenceModel(frameGizmos, model) {
+  if (!frameGizmos.gizmos.size || !model) {
+    return;
+  }
+
+  frameGizmos.referenceMap = createObjectMap(model);
+}
+
+function updateAnatomicalFrameGizmos(frameGizmos, frame, root) {
+  if (!frameGizmos.enabled || !frame) {
+    return;
+  }
+
+  const displayFrames = frameGizmos.referenceMap
+    ? sampleAnatomicalCoordinateSystem(frameGizmos.referenceMap).frames
+    : frame.anatomicalFrames;
+
+  frameGizmos.gizmos.forEach((gizmo, id) => {
+    const anatomicalFrame = displayFrames[id];
+
+    gizmo.group.visible = Boolean(anatomicalFrame);
+
+    if (!anatomicalFrame) {
+      return;
+    }
+
+    updateAnatomicalFrameGizmo(gizmo, anatomicalFrame, root);
+  });
+}
+
+function updateAnatomicalFrameGizmo(gizmo, anatomicalFrame, root) {
+  const origin = toRootLocal(root, anatomicalFrame.origin);
+
+  Object.entries(gizmo.axes).forEach(([axis, helper]) => {
+    const worldEnd = anatomicalFrame.origin.clone().add(
+      anatomicalFrame.axes[axis].clone().multiplyScalar(gizmo.definition.length),
+    );
+    const localEnd = toRootLocal(root, worldEnd);
+
+    setLinePoints(helper.line, [origin, localEnd]);
+
+    if (helper.label) {
+      helper.label.position.copy(localEnd);
+    }
+  });
+}
+
+function setFrameGizmosVisible(frameGizmos, visible) {
+  frameGizmos.enabled = Boolean(visible && frameGizmos.gizmos.size);
+
+  if (!frameGizmos.enabled) {
+    frameGizmos.gizmos.forEach((gizmo) => {
+      gizmo.group.visible = false;
+    });
+  }
+}
+
+function createEmptyAxisTrails() {
+  return {
+    enabled: false,
+    trails: new Map(),
+    referenceMap: null,
+  };
+}
+
+function createAxisTrails(overlayRoot, metadata) {
+  const axisTrails = {
+    enabled: true,
+    trails: new Map(),
+    referenceMap: null,
+  };
+
+  AXIS_TRAIL_DEFINITIONS.forEach((definition) => {
+    const trail = createAxisTrail({
+      ...definition,
+      maxPoints: Math.max(definition.maxPoints, metadata.frames),
+    });
+
+    overlayRoot.add(trail.group);
+    axisTrails.trails.set(definition.id, trail);
+  });
+
+  return axisTrails;
+}
+
+function createAxisTrail(definition) {
+  const group = new THREE.Group();
+  const geometry = new THREE.BufferGeometry();
+  const material = new THREE.MeshBasicMaterial({
+    color: definition.color,
+    depthTest: false,
+    transparent: true,
+    opacity: 0.78,
+  });
+  const mesh = new THREE.Mesh(geometry, material);
+
+  group.name = `${definition.id} axis temporal trail`;
+  mesh.renderOrder = 78;
+  mesh.frustumCulled = false;
+  group.add(mesh);
+
+  return {
+    definition,
+    group,
+    mesh,
+    pointsByFrame: new Map(),
+  };
+}
+
+function setAxisTrailReferenceModel(axisTrails, model) {
+  if (!axisTrails.trails.size || !model) {
+    return;
+  }
+
+  axisTrails.referenceMap = createObjectMap(model);
+  clearAxisTrails(axisTrails);
+}
+
+function clearAxisTrails(axisTrails) {
+  axisTrails.trails.forEach((trail) => {
+    trail.pointsByFrame.clear();
+    trail.mesh.geometry.dispose();
+    trail.mesh.geometry = new THREE.BufferGeometry();
+  });
+}
+
+function setAxisTrailsVisible(axisTrails, visible) {
+  axisTrails.enabled = Boolean(visible && axisTrails.trails.size);
+
+  if (!axisTrails.enabled) {
+    axisTrails.trails.forEach((trail) => {
+      trail.group.visible = false;
+    });
+  }
+}
+
+function updateAxisTrails(axisTrails, frame, root) {
+  if (!axisTrails.enabled || !frame) {
+    return;
+  }
+
+  const displayFrames = axisTrails.referenceMap
+    ? sampleAnatomicalCoordinateSystem(axisTrails.referenceMap).frames
+    : frame.anatomicalFrames;
+
+  axisTrails.trails.forEach((trail) => {
+    const point = getAxisTrailPoint(trail.definition, displayFrames);
+
+    if (!point) {
+      trail.group.visible = false;
+      return;
+    }
+
+    appendAxisTrailPoint(trail, point, frame.frameIndex, frame.frameCount);
+    updateAxisTrailLine(trail, root);
+  });
+}
+
+function getAxisTrailPoint(definition, frames) {
+  const anatomicalFrame = frames?.[definition.frameId];
+  const axis = anatomicalFrame?.axes?.[definition.axis];
+
+  if (!anatomicalFrame || !axis) {
+    return null;
+  }
+
+  return anatomicalFrame.origin.clone().add(axis.clone().multiplyScalar(definition.scale));
+}
+
+function appendAxisTrailPoint(trail, point, frameIndex, frameCount) {
+  const previous = trail.pointsByFrame.get(frameIndex);
+
+  if (previous && previous.distanceTo(point) < trail.definition.minDistance) {
+    return;
+  }
+
+  trail.pointsByFrame.set(frameIndex, point.clone());
+
+  while (trail.pointsByFrame.size > trail.definition.maxPoints) {
+    const oldestKey = trail.pointsByFrame.keys().next().value;
+    trail.pointsByFrame.delete(oldestKey);
+  }
+}
+
+function updateAxisTrailLine(trail, root) {
+  const points = getOrderedAxisTrailPoints(trail);
+
+  if (points.length < 2) {
+    trail.group.visible = false;
+    return;
+  }
+
+  const smoothPoints = buildTrailSplinePoints(points)
+    .map((point) => toRootLocal(root, point));
+
+  trail.group.visible = true;
+  setTrailTubeGeometry(trail, smoothPoints);
+}
+
+function getOrderedAxisTrailPoints(trail) {
+  const orderedPoints = Array.from(trail.pointsByFrame.entries())
+    .sort(([a], [b]) => a - b)
+    .map(([, point]) => point);
+  const filteredPoints = [];
+
+  orderedPoints.forEach((point) => {
+    const previous = filteredPoints.at(-1);
+
+    if (!previous || previous.distanceTo(point) >= trail.definition.minDistance) {
+      filteredPoints.push(point);
+    }
+  });
+
+  return filteredPoints;
+}
+
+function buildTrailSplinePoints(points) {
+  if (points.length < 3) {
+    return points;
+  }
+
+  const curve = new THREE.CatmullRomCurve3(points, false, 'centripetal', 0.35);
+  const renderPoints = Math.max(points.length * AXIS_TRAIL_SMOOTHING, points.length);
+
+  return curve.getPoints(renderPoints - 1);
+}
+
+function setTrailTubeGeometry(trail, points) {
+  const curve = new THREE.CatmullRomCurve3(points, false, 'centripetal', 0.35);
+  const tubularSegments = Math.max(points.length - 1, 2);
+  const geometry = new THREE.TubeGeometry(curve, tubularSegments, trail.definition.radius, 6, false);
+
+  trail.mesh.geometry.dispose();
+  trail.mesh.geometry = geometry;
+}
+
+function createEmptyAngleArcs() {
+  return {
+    enabled: false,
+    arcs: new Map(),
+    referenceMap: null,
+  };
+}
+
+function createJointAngleArcs(overlayRoot) {
+  const angleArcs = {
+    enabled: true,
+    arcs: new Map(),
+    referenceMap: null,
+  };
+
+  JOINT_ANGLE_ARC_DEFINITIONS.forEach((definition) => {
+    const arc = createJointAngleArc(definition);
+
+    overlayRoot.add(arc.group);
+    angleArcs.arcs.set(definition.id, arc);
+  });
+
+  return angleArcs;
+}
+
+function createJointAngleArc(definition) {
+  const group = new THREE.Group();
+  const line = createLine(definition.color, JOINT_ANGLE_ARC_SEGMENTS + 1);
+
+  group.name = `${definition.id} joint angle arc`;
+  line.line.renderOrder = 86;
+  line.line.material.opacity = definition.type === 'rotation' ? 0.72 : 0.88;
+  group.add(line.line);
+
+  return {
+    definition,
+    group,
+    line,
+  };
+}
+
+function setAngleArcReferenceModel(angleArcs, model) {
+  if (!angleArcs.arcs.size || !model) {
+    return;
+  }
+
+  angleArcs.referenceMap = createObjectMap(model);
+}
+
+function setAngleArcsVisible(angleArcs, visible) {
+  angleArcs.enabled = Boolean(visible && angleArcs.arcs.size);
+
+  if (!angleArcs.enabled) {
+    angleArcs.arcs.forEach((arc) => {
+      arc.group.visible = false;
+    });
+  }
+}
+
+function updateJointAngleArcs(angleArcs, frame, root) {
+  if (!angleArcs.enabled || !frame) {
+    return;
+  }
+
+  const displayAnatomical = angleArcs.referenceMap
+    ? sampleAnatomicalCoordinateSystem(angleArcs.referenceMap)
+    : {
+      landmarks: frame.anatomicalLandmarks,
+      frames: frame.anatomicalFrames,
+    };
+
+  angleArcs.arcs.forEach((arc) => {
+    if (arc.definition.type === 'rotation') {
+      updatePelvisRotationArc(arc, displayAnatomical, root);
+    } else {
+      updateFlexionAngleArc(arc, displayAnatomical, root);
+    }
+  });
+}
+
+function updateFlexionAngleArc(arc, anatomical, root) {
+  const { landmarks, frames } = anatomical;
+  const { side, joint } = arc.definition;
+  const pelvisFrame = frames?.pelvis;
+  let center = null;
+  let startDirection = null;
+  let endDirection = null;
+  let radiusBasis = null;
+
+  if (!landmarks || !pelvisFrame) {
+    arc.group.visible = false;
+    return;
+  }
+
+  if (joint === 'hip') {
+    const hip = landmarks[`${side}Hip`];
+    const knee = landmarks[`${side}Knee`];
+
+    if (hip && knee) {
+      center = hip;
+      startDirection = pelvisFrame.axes.y.clone().negate();
+      endDirection = knee.clone().sub(hip);
+      radiusBasis = endDirection.length();
+    }
+  } else if (joint === 'knee') {
+    const hip = landmarks[`${side}Hip`];
+    const knee = landmarks[`${side}Knee`];
+    const ankle = landmarks[`${side}Ankle`];
+
+    if (hip && knee && ankle) {
+      center = knee;
+      startDirection = knee.clone().sub(hip);
+      endDirection = ankle.clone().sub(knee);
+      radiusBasis = Math.min(startDirection.length(), endDirection.length());
+    }
+  } else if (joint === 'ankle') {
+    const knee = landmarks[`${side}Knee`];
+    const ankle = landmarks[`${side}Ankle`];
+    const toe = landmarks[`${side}Toe`];
+
+    if (knee && ankle && toe) {
+      center = ankle;
+      startDirection = ankle.clone().sub(knee);
+      endDirection = toe.clone().sub(ankle);
+      radiusBasis = endDirection.length();
+    }
+  }
+
+  if (!center || !startDirection || !endDirection || !Number.isFinite(radiusBasis)) {
+    arc.group.visible = false;
+    return;
+  }
+
+  updateArcLine({
+    arc,
+    center,
+    startDirection,
+    endDirection,
+    normalHint: pelvisFrame.axes.x,
+    radius: clamp(radiusBasis * arc.definition.radiusScale, 0.08, 0.26),
+    root,
+  });
+}
+
+function updatePelvisRotationArc(arc, anatomical, root) {
+  const pelvisFrame = anatomical.frames?.pelvis;
+
+  if (!pelvisFrame) {
+    arc.group.visible = false;
+    return;
+  }
+
+  const worldForward = new THREE.Vector3(0, 0, 1);
+  const normalHint = pelvisFrame.axes.y;
+  const radiusBasis = getPelvisWidth(anatomical.landmarks) || 0.7;
+
+  updateArcLine({
+    arc,
+    center: pelvisFrame.origin,
+    startDirection: worldForward,
+    endDirection: pelvisFrame.axes.z,
+    normalHint,
+    radius: clamp(radiusBasis * arc.definition.radiusScale, 0.18, 0.34),
+    root,
+  });
+}
+
+function updateArcLine({
+  arc,
+  center,
+  startDirection,
+  endDirection,
+  normalHint,
+  radius,
+  root,
+}) {
+  let normal = safeNormalize(normalHint, new THREE.Vector3(0, 1, 0));
+  let start = rejectVector(startDirection, normal);
+  let end = rejectVector(endDirection, normal);
+
+  if (start.lengthSq() <= EPSILON || end.lengthSq() <= EPSILON) {
+    const fallbackNormal = startDirection.clone().cross(endDirection);
+
+    if (fallbackNormal.lengthSq() <= EPSILON) {
+      arc.group.visible = false;
+      return;
+    }
+
+    normal = fallbackNormal.normalize();
+    start = rejectVector(startDirection, normal);
+    end = rejectVector(endDirection, normal);
+  }
+
+  if (start.lengthSq() <= EPSILON || end.lengthSq() <= EPSILON) {
+    arc.group.visible = false;
+    return;
+  }
+
+  start.normalize();
+  end.normalize();
+
+  const signedAngle = signedAngleBetween(start, end, normal);
+
+  if (Math.abs(signedAngle) <= THREE.MathUtils.degToRad(2)) {
+    arc.group.visible = false;
+    return;
+  }
+
+  const points = [];
+
+  for (let index = 0; index <= JOINT_ANGLE_ARC_SEGMENTS; index += 1) {
+    const t = index / JOINT_ANGLE_ARC_SEGMENTS;
+    const direction = start.clone().applyAxisAngle(normal, signedAngle * t);
+    const worldPoint = center.clone().add(direction.multiplyScalar(radius));
+
+    points.push(toRootLocal(root, worldPoint));
+  }
+
+  arc.group.visible = true;
+  setLinePoints(arc.line, points);
+}
+
+function signedAngleBetween(start, end, normal) {
+  const cosine = clamp(start.dot(end), -1, 1);
+  const sine = start.clone().cross(end).dot(normal);
+
+  return Math.atan2(sine, cosine);
+}
+
+function getPelvisWidth(landmarks) {
+  const leftHip = landmarks?.leftHip;
+  const rightHip = landmarks?.rightHip;
+
+  return leftHip && rightHip ? leftHip.distanceTo(rightHip) : null;
+}
+
 function createObjectMap(root) {
   const map = new Map();
 
@@ -800,27 +1633,10 @@ function createIkHelpers(overlayRoot, chains) {
   chains.forEach((chain) => {
     const targetMarker = createMarker(chain.color, 'sphere');
     const poleMarker = createMarker(chain.poleColor, 'octahedron');
-    const limbLine = createLine(chain.color, 3);
-    const poleLine = createLine(chain.poleColor, 2);
-    const targetLabel = createTextSprite(chain.targetLabel, chain.color);
-    const poleLabel = createTextSprite(chain.poleLabel, chain.poleColor);
 
-    targetMarker.add(targetLabel);
-    poleMarker.add(poleLabel);
-    targetLabel.position.set(0, 0.12, 0);
-    poleLabel.position.set(0, 0.1, 0);
-
-    overlayRoot.add(targetMarker, poleMarker, limbLine.line, poleLine.line);
+    overlayRoot.add(targetMarker, poleMarker);
     helpers.targets.set(chain.targetId, targetMarker);
     helpers.poles.set(chain.poleId, poleMarker);
-    helpers.limbs.set(chain.id, limbLine);
-    helpers.poleLines.set(chain.id, poleLine);
-
-    if (chain.toeBone) {
-      const toeLine = createLine(chain.color, 2);
-      overlayRoot.add(toeLine.line);
-      helpers.toeLines.set(chain.id, toeLine);
-    }
   });
 
   return helpers;
@@ -916,7 +1732,7 @@ function buildAnalysisFrames({ metadata, contactBaselines, setTime, getRestoreTi
   const frames = [];
 
   for (let frameIndex = 0; frameIndex < metadata.frames; frameIndex += 1) {
-    frames.push(serializeAnalysisFrame(setTime(frameIndex * metadata.frameTime)));
+    frames.push(serializeAnalysisFrame(setTime(frameIndex * metadata.frameTime, { updateVisuals: false })));
   }
 
   setTime(restoreTime);
@@ -966,9 +1782,31 @@ function serializeAnalysisFrame(frame) {
         direction: serializeVector(pole.direction),
       },
     ])),
+    anatomicalFrames: serializeAnatomicalFrames(frame.anatomicalFrames),
+    anatomicalJointAngles: frame.anatomicalJointAngles,
     bvhChannels: frame.bvhChannels,
     localJointRotations: frame.jointRotations,
   };
+}
+
+function serializeAnatomicalFrames(frames) {
+  return Object.fromEntries(Object.entries(frames).map(([id, frame]) => [
+    id,
+    frame ? {
+      origin: serializeVector(frame.origin),
+      axes: {
+        x: serializeVector(frame.axes.x),
+        y: serializeVector(frame.axes.y),
+        z: serializeVector(frame.axes.z),
+      },
+      quaternion: {
+        x: roundUnit(frame.quaternion.x),
+        y: roundUnit(frame.quaternion.y),
+        z: roundUnit(frame.quaternion.z),
+        w: roundUnit(frame.quaternion.w),
+      },
+    } : null,
+  ]));
 }
 
 function buildAnalysisCsv(analysis) {
@@ -991,6 +1829,8 @@ function buildAnalysisCsv(analysis) {
     appendPole(row, 'right_elbow', frame.ikPoles.rightElbow);
     appendPole(row, 'left_knee', frame.ikPoles.leftKnee);
     appendPole(row, 'right_knee', frame.ikPoles.rightKnee);
+    appendAnatomicalAngles(row, 'left', frame.anatomicalJointAngles.left);
+    appendAnatomicalAngles(row, 'right', frame.anatomicalJointAngles.right);
     appendRawRotationChannels(row, frame.bvhChannels);
     return row;
   });
@@ -1043,6 +1883,18 @@ function appendPole(row, prefix, pole) {
   row[`${prefix}_pole_dir_x`] = pole.direction.x;
   row[`${prefix}_pole_dir_y`] = pole.direction.y;
   row[`${prefix}_pole_dir_z`] = pole.direction.z;
+}
+
+function appendAnatomicalAngles(row, side, sideAngles) {
+  appendAnatomicalJoint(row, `${side}_hip`, sideAngles?.hip);
+  appendAnatomicalJoint(row, `${side}_knee`, sideAngles?.knee);
+  appendAnatomicalJoint(row, `${side}_ankle`, sideAngles?.ankle);
+}
+
+function appendAnatomicalJoint(row, prefix, angles) {
+  row[`${prefix}_acs_flexion_extension_deg`] = angles?.flexionExtensionDeg ?? '';
+  row[`${prefix}_acs_abduction_adduction_deg`] = angles?.abductionAdductionDeg ?? '';
+  row[`${prefix}_acs_internal_external_deg`] = angles?.internalExternalRotationDeg ?? '';
 }
 
 function appendRawRotationChannels(row, bvhChannels) {
@@ -1124,14 +1976,14 @@ function setLinePoints(helper, points) {
     helper.positions[index * 3 + 2] = point.z;
   });
 
+  helper.line.geometry.setDrawRange(0, points.length);
   helper.line.geometry.attributes.position.needsUpdate = true;
   helper.line.geometry.computeBoundingSphere();
 }
 
-function createTextSprite(text, color) {
+function createTextSprite(text, color, fontSize = 28, scale = 0.0019) {
   const canvas = document.createElement('canvas');
   const context = canvas.getContext('2d');
-  const fontSize = 28;
   const paddingX = 14;
   const paddingY = 8;
 
@@ -1162,7 +2014,7 @@ function createTextSprite(text, color) {
     transparent: true,
     depthTest: false,
   }));
-  sprite.scale.set(canvas.width * 0.0019, canvas.height * 0.0019, 1);
+  sprite.scale.set(canvas.width * scale, canvas.height * scale, 1);
   sprite.renderOrder = 60;
   return sprite;
 }
