@@ -37,6 +37,10 @@ const JOINT_ANGLE_ARC_DEFINITIONS = [
 
 const AXIS_TRAIL_SMOOTHING = 3;
 const AXIS_TRAIL_REPLAY_RESET_FRAME_GAP = 5;
+const COM_TRAIL_REPLAY_RESET_FRAME_GAP = 5;
+const COM_TRAIL_MIN_DISTANCE = 0.004;
+const COM_TRAIL_COLOR = 0x48f0ff;
+const COM_MARKER_COLOR = 0xf4f6ef;
 const AXIS_TRAIL_DEFINITIONS = [
   { id: 'pelvisForward', frameId: 'pelvis', axis: 'z', color: 0x4d8dff, scale: 0.42, maxPoints: 2400, minDistance: 0.003, radius: 0.018 },
   { id: 'leftFootForward', frameId: 'leftFoot', axis: 'z', color: 0x85f06c, scale: 0.22, maxPoints: 2400, minDistance: 0.003, radius: 0.014 },
@@ -142,6 +146,7 @@ export function createBvhIkDebug({
   showAxisGizmos = false,
   showAngleArcs = false,
   showAxisTrails = false,
+  showComTrail = false,
   showVisuals = false,
 } = {}) {
   const root = new THREE.Group();
@@ -155,13 +160,15 @@ export function createBvhIkDebug({
     showAxisGizmos: showVisuals || showAxisGizmos,
     showAngleArcs: showVisuals || showAngleArcs,
     showAxisTrails: showVisuals || showAxisTrails,
+    showComTrail: showVisuals || showComTrail,
   };
 
   root.visible = visualOptions.showSkeleton
     || visualOptions.showIkHelpers
     || visualOptions.showAxisGizmos
     || visualOptions.showAngleArcs
-    || visualOptions.showAxisTrails;
+    || visualOptions.showAxisTrails
+    || visualOptions.showComTrail;
   skeletonRoot.name = 'BVH calculation source';
   skeletonRoot.scale.setScalar(scale);
   overlayRoot.name = 'IK target debug overlay';
@@ -227,6 +234,9 @@ async function loadBvhIkDebug({ url, root, skeletonRoot, overlayRoot, visualOpti
   const axisTrails = visualOptions.showAxisTrails
     ? createAxisTrails(overlayRoot, metadata)
     : createEmptyAxisTrails();
+  const comTrail = visualOptions.showComTrail
+    ? createComTrailVisual(overlayRoot, chains, metadata)
+    : createEmptyComTrailVisual();
 
   alignSkeletonRoot(skeletonRoot, rootBone, skeleton.bones);
   root.updateMatrixWorld(true);
@@ -260,6 +270,7 @@ async function loadBvhIkDebug({ url, root, skeletonRoot, overlayRoot, visualOpti
       updateAnatomicalFrameGizmos(frameGizmos, currentFrame, root);
       updateJointAngleArcs(angleArcs, currentFrame, root);
       updateAxisTrails(axisTrails, currentFrame, root);
+      updateComTrailVisual(comTrail, currentFrame, root);
     }
     return currentFrame;
   };
@@ -271,7 +282,8 @@ async function loadBvhIkDebug({ url, root, skeletonRoot, overlayRoot, visualOpti
       || helpers.enabled
       || frameGizmos.enabled
       || angleArcs.enabled
-      || axisTrails.enabled;
+      || axisTrails.enabled
+      || comTrail.enabled;
   };
 
   return {
@@ -290,10 +302,12 @@ async function loadBvhIkDebug({ url, root, skeletonRoot, overlayRoot, visualOpti
       setFrameGizmoReferenceModel(frameGizmos, model);
       setAngleArcReferenceModel(angleArcs, model);
       setAxisTrailReferenceModel(axisTrails, model);
+      setComTrailReferenceModel(comTrail, model);
       updateSkeletonLineOverlay(skeletonVisual, root);
       updateAnatomicalFrameGizmos(frameGizmos, currentFrame, root);
       updateJointAngleArcs(angleArcs, currentFrame, root);
       updateAxisTrails(axisTrails, currentFrame, root);
+      updateComTrailVisual(comTrail, currentFrame, root);
     },
     setSkeletonVisible: (visible) => {
       skeletonVisual.enabled = Boolean(visible);
@@ -317,12 +331,22 @@ async function loadBvhIkDebug({ url, root, skeletonRoot, overlayRoot, visualOpti
 
       refreshRootVisibility();
     },
+    setComTrailVisible: (visible) => {
+      setComTrailVisible(comTrail, visible);
+
+      if (comTrail.enabled) {
+        updateComTrailVisual(comTrail, currentFrame, root);
+      }
+
+      refreshRootVisibility();
+    },
     getVisualState: () => ({
       skeletonEnabled: skeletonVisual.enabled,
       frameGizmosEnabled: frameGizmos.enabled,
       angleArcsEnabled: angleArcs.enabled,
       axisTrailsEnabled: axisTrails.enabled,
       bodyAxisEnabled: frameGizmos.enabled || angleArcs.enabled || axisTrails.enabled,
+      comTrailEnabled: comTrail.enabled,
       skeletonSegments: skeletonVisual.segments.length,
       glbAlignedSegments: skeletonVisual.segments.filter(
         (segment) => segment.referenceBone && segment.referenceParentBone,
@@ -1388,6 +1412,272 @@ function setTrailTubeGeometry(trail, points) {
 
   trail.mesh.geometry.dispose();
   trail.mesh.geometry = geometry;
+}
+
+function createEmptyComTrailVisual() {
+  return {
+    enabled: false,
+    group: null,
+    referenceMap: null,
+  };
+}
+
+function createComTrailVisual(overlayRoot, chains, metadata) {
+  const sampleRate = metadata.sampleRate ?? 30;
+  const maxPoints = Math.max(metadata.frames ?? 0, Math.ceil(sampleRate * 2), 60);
+  const group = new THREE.Group();
+  const line = createLine(COM_TRAIL_COLOR, maxPoints);
+  const marker = createMarker(COM_MARKER_COLOR, 'sphere');
+
+  group.name = 'COM trajectory overlay';
+  line.line.name = 'COM trajectory trail';
+  line.line.material.opacity = 0.72;
+  line.line.renderOrder = 88;
+  marker.name = 'COM current marker';
+  marker.scale.setScalar(0.82);
+  marker.renderOrder = 90;
+  group.add(line.line, marker);
+  overlayRoot.add(group);
+
+  return {
+    chainByTargetId: new Map(chains.map((chain) => [chain.targetId, chain])),
+    enabled: true,
+    group,
+    lastFrameIndex: null,
+    line,
+    marker,
+    maxPoints,
+    points: [],
+    referenceMap: null,
+  };
+}
+
+function setComTrailReferenceModel(comTrail, model) {
+  if (!comTrail.group || !model) {
+    return;
+  }
+
+  comTrail.referenceMap = createObjectMap(model);
+  clearComTrailVisual(comTrail);
+}
+
+function setComTrailVisible(comTrail, visible) {
+  comTrail.enabled = Boolean(visible && comTrail.group);
+
+  if (!comTrail.enabled && comTrail.group) {
+    comTrail.group.visible = false;
+  }
+}
+
+function clearComTrailVisual(comTrail) {
+  if (!comTrail.group) {
+    return;
+  }
+
+  comTrail.lastFrameIndex = null;
+  comTrail.points = [];
+  comTrail.marker.visible = false;
+  comTrail.line.line.geometry.setDrawRange(0, 0);
+  comTrail.line.line.geometry.attributes.position.needsUpdate = true;
+  comTrail.group.visible = false;
+}
+
+function updateComTrailVisual(comTrail, frame, root) {
+  if (!comTrail.enabled || !frame) {
+    return;
+  }
+
+  const com = estimateDisplayCom(frame, comTrail);
+
+  if (!com) {
+    comTrail.group.visible = false;
+    return;
+  }
+
+  if (shouldClearComTrailForJump(comTrail, frame.frameIndex)) {
+    clearComTrailVisual(comTrail);
+  }
+
+  appendComTrailPoint(comTrail, com, frame);
+  updateComTrailLine(comTrail, root);
+
+  comTrail.marker.position.copy(toRootLocal(root, com));
+  comTrail.marker.visible = true;
+  comTrail.group.visible = true;
+  comTrail.lastFrameIndex = frame.frameIndex;
+}
+
+function shouldClearComTrailForJump(comTrail, frameIndex) {
+  return comTrail.lastFrameIndex !== null
+    && frameIndex + COM_TRAIL_REPLAY_RESET_FRAME_GAP < comTrail.lastFrameIndex;
+}
+
+function appendComTrailPoint(comTrail, position, frame) {
+  const previous = comTrail.points.at(-1);
+
+  if (previous?.frameIndex === frame.frameIndex) {
+    previous.position.copy(position);
+    previous.time = frame.time;
+    return;
+  }
+
+  if (previous && previous.position.distanceTo(position) < COM_TRAIL_MIN_DISTANCE) {
+    previous.frameIndex = frame.frameIndex;
+    previous.position.copy(position);
+    previous.time = frame.time;
+    return;
+  }
+
+  comTrail.points.push({
+    frameIndex: frame.frameIndex,
+    position: position.clone(),
+    time: frame.time,
+  });
+
+  trimComTrailPoints(comTrail);
+}
+
+function trimComTrailPoints(comTrail) {
+  while (comTrail.points.length > comTrail.maxPoints) {
+    comTrail.points.shift();
+  }
+}
+
+function updateComTrailLine(comTrail, root) {
+  if (comTrail.points.length < 2) {
+    comTrail.line.line.geometry.setDrawRange(0, 0);
+    return;
+  }
+
+  const points = comTrail.points
+    .map((point) => toRootLocal(root, point.position));
+
+  setLinePoints(comTrail.line, points);
+}
+
+function estimateDisplayCom(frame, comTrail) {
+  const accumulator = createComAccumulator();
+  const leftArm = getDisplayTarget(frame, comTrail, 'leftHand');
+  const rightArm = getDisplayTarget(frame, comTrail, 'rightHand');
+  const leftLeg = getDisplayTarget(frame, comTrail, 'leftFoot');
+  const rightLeg = getDisplayTarget(frame, comTrail, 'rightFoot');
+  const root = getDisplayPosition(getReferenceBone(comTrail, 'Hips'), frame.root?.position);
+  const shoulderCenter = averageVector3([
+    leftArm?.rootPosition,
+    rightArm?.rootPosition,
+  ]);
+
+  if (root && shoulderCenter) {
+    addWeightedVector3(accumulator, root.clone().lerp(shoulderCenter, 0.52), 0.5);
+  } else if (root) {
+    addWeightedVector3(accumulator, root, 0.5);
+  }
+
+  addDisplayLimbSegments(accumulator, leftArm, {
+    distal: 0.006,
+    lower: 0.016,
+    upper: 0.028,
+  });
+  addDisplayLimbSegments(accumulator, rightArm, {
+    distal: 0.006,
+    lower: 0.016,
+    upper: 0.028,
+  });
+  addDisplayLimbSegments(accumulator, leftLeg, {
+    distal: 0.015,
+    lower: 0.046,
+    upper: 0.1,
+  });
+  addDisplayLimbSegments(accumulator, rightLeg, {
+    distal: 0.015,
+    lower: 0.046,
+    upper: 0.1,
+  });
+
+  if (accumulator.weight <= 0) {
+    return root ?? null;
+  }
+
+  return new THREE.Vector3(
+    accumulator.x / accumulator.weight,
+    accumulator.y / accumulator.weight,
+    accumulator.z / accumulator.weight,
+  );
+}
+
+function getDisplayTarget(frame, comTrail, targetId) {
+  const target = frame.targets?.[targetId];
+  const chain = comTrail.chainByTargetId.get(targetId);
+
+  if (!target || !chain) {
+    return null;
+  }
+
+  return {
+    rootPosition: getDisplayPosition(getReferenceBone(comTrail, chain.rootBone?.name), target.rootPosition),
+    midPosition: getDisplayPosition(getReferenceBone(comTrail, chain.midBone?.name), target.midPosition),
+    position: getDisplayPosition(getReferenceBone(comTrail, chain.endBone?.name), target.position),
+    toePosition: target.toePosition
+      ? getDisplayPosition(getReferenceBone(comTrail, chain.toeBone?.name), target.toePosition)
+      : null,
+  };
+}
+
+function getReferenceBone(comTrail, name) {
+  return name && comTrail.referenceMap
+    ? comTrail.referenceMap.get(name) ?? null
+    : null;
+}
+
+function createComAccumulator() {
+  return {
+    weight: 0,
+    x: 0,
+    y: 0,
+    z: 0,
+  };
+}
+
+function addDisplayLimbSegments(accumulator, target, weights) {
+  if (!target?.rootPosition || !target.midPosition || !target.position) {
+    return;
+  }
+
+  addWeightedVector3(accumulator, midpointVector3(target.rootPosition, target.midPosition), weights.upper);
+  addWeightedVector3(accumulator, midpointVector3(target.midPosition, target.position), weights.lower);
+
+  if (target.toePosition) {
+    addWeightedVector3(accumulator, midpointVector3(target.position, target.toePosition), weights.distal);
+  } else {
+    addWeightedVector3(accumulator, target.position, weights.distal);
+  }
+}
+
+function addWeightedVector3(accumulator, vector, weight) {
+  if (!vector || weight <= 0) {
+    return;
+  }
+
+  accumulator.x += vector.x * weight;
+  accumulator.y += vector.y * weight;
+  accumulator.z += vector.z * weight;
+  accumulator.weight += weight;
+}
+
+function averageVector3(vectors) {
+  const validVectors = vectors.filter(Boolean);
+
+  if (!validVectors.length) {
+    return null;
+  }
+
+  const sum = validVectors.reduce((accumulator, vector) => accumulator.add(vector), new THREE.Vector3());
+
+  return sum.multiplyScalar(1 / validVectors.length);
+}
+
+function midpointVector3(a, b) {
+  return a.clone().lerp(b, 0.5);
 }
 
 function createEmptyAngleArcs() {

@@ -67,6 +67,17 @@ body {
   background: #6ea4ff;
 }
 
+.com-trail-toggle {
+  top: 100px;
+  min-width: 118px;
+  background: #48f0ff;
+  color: #10130f;
+}
+
+.com-trail-toggle:hover {
+  background: #8df7ff;
+}
+
 .video-panel {
   position: fixed;
   top: 50%;

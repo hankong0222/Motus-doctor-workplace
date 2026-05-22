@@ -70,6 +70,7 @@ const ikExportJson = document.querySelector('#ik-export-json');
 const ikExportCsv = document.querySelector('#ik-export-csv');
 const bvhVisualToggle = document.querySelector('#bvh-visual-toggle');
 const bodyAxisToggle = document.querySelector('#body-axis-toggle');
+const comTrailToggle = document.querySelector('#com-trail-toggle');
 const debugDashboardTab = document.querySelector('#debug-dashboard-tab');
 const trajectorySphereTab = document.querySelector('#trajectory-sphere-tab');
 const debugDashboardView = document.querySelector('#debug-dashboard-view');
@@ -89,6 +90,7 @@ const bvhIkDebug = createBvhIkDebug({
   showAxisGizmos: true,
   showAngleArcs: true,
   showAxisTrails: true,
+  showComTrail: true,
 });
 const followTargetPosition = new THREE.Vector3();
 const desiredTarget = new THREE.Vector3();
@@ -139,6 +141,7 @@ let glbReferenceModel = null;
 let latestIkReadoutFrame = -1;
 let bvhVisualsVisible = true;
 let bodyAxisVisible = true;
+let comTrailVisible = true;
 let activeDebugView = 'dashboard';
 const trajectorySphere = createFrameTrajectorySphere({
   canvas: trajectorySphereCanvas,
@@ -242,6 +245,10 @@ bvhVisualToggle.addEventListener('click', () => {
 
 bodyAxisToggle.addEventListener('click', () => {
   setBodyAxisVisible(!bodyAxisVisible);
+});
+
+comTrailToggle.addEventListener('click', () => {
+  setComTrailVisible(!comTrailVisible);
 });
 
 debugDashboardTab.addEventListener('click', () => {
@@ -802,6 +809,14 @@ function setBodyAxisVisible(isVisible) {
   updateIkDebugStatus();
 }
 
+function setComTrailVisible(isVisible) {
+  comTrailVisible = isVisible;
+  comTrailToggle.textContent = comTrailVisible ? 'COM Trail On' : 'COM Trail Off';
+  comTrailToggle.setAttribute('aria-pressed', String(comTrailVisible));
+  applyDebugVisualVisibility();
+  updateIkDebugStatus();
+}
+
 function setDebugPanelView(view) {
   activeDebugView = view;
   const isSphere = activeDebugView === 'sphere';
@@ -816,12 +831,13 @@ function setDebugPanelView(view) {
 
 function applyDebugVisualVisibility() {
   if (!bvhIkRuntime) {
-    bvhIkDebug.root.visible = bvhVisualsVisible || bodyAxisVisible;
+    bvhIkDebug.root.visible = bvhVisualsVisible || bodyAxisVisible || comTrailVisible;
     return;
   }
 
   bvhIkRuntime.setSkeletonVisible?.(bvhVisualsVisible);
   bvhIkRuntime.setBodyAxisVisible?.(bodyAxisVisible);
+  bvhIkRuntime.setComTrailVisible?.(comTrailVisible);
 }
 
 function updateIkDebugStatus() {
@@ -830,7 +846,7 @@ function updateIkDebugStatus() {
     return;
   }
 
-  ikDebugStatus.textContent = `${bvhIkRuntime.metadata.frames}f / ${bvhIkRuntime.metadata.bones} bones / BVH ${bvhVisualsVisible ? 'on' : 'off'} / axis ${bodyAxisVisible ? 'on' : 'off'}`;
+  ikDebugStatus.textContent = `${bvhIkRuntime.metadata.frames}f / ${bvhIkRuntime.metadata.bones} bones / BVH ${bvhVisualsVisible ? 'on' : 'off'} / axis ${bodyAxisVisible ? 'on' : 'off'} / COM ${comTrailVisible ? 'on' : 'off'}`;
 }
 
 function updateIkDebugUi(frame, force = false) {
@@ -1108,15 +1124,23 @@ function getPrecomputedComStability(data, frameIndex) {
 function calculateComStability(frame, supportFrame) {
   const estimatedCom = estimateBodyCom(frame);
   const com = toGroundPoint(estimatedCom);
+  const frameIndex = getFrameIndex(frame);
   const leftFoot = createFootSupportPatch(getFrameTarget(frame, 'leftFoot'), supportFrame?.leftSupport);
   const rightFoot = createFootSupportPatch(getFrameTarget(frame, 'rightFoot'), supportFrame?.rightSupport);
-  const supportPoints = [
+  const supportWorldPoints = [
     ...leftFoot.points,
     ...rightFoot.points,
   ];
+  const supportFrameData = createSupportFrame(leftFoot, rightFoot, supportFrame?.method);
+  const relativeCom = com && supportFrameData.center
+    ? subtract2d(com, supportFrameData.center)
+    : null;
+  const supportPoints = supportFrameData.center
+    ? supportWorldPoints.map((point) => subtract2d(point, supportFrameData.center))
+    : [];
   const supportPolygon = supportPoints.length >= 3 ? convexHull2d(supportPoints) : [];
-  const isStable = Boolean(com && supportPolygon.length >= 3 && pointInPolygon2d(com, supportPolygon));
-  const bounds = createGroundBounds(com, supportPoints);
+  const isStable = Boolean(relativeCom && supportPolygon.length >= 3 && pointInPolygon2d(relativeCom, supportPolygon));
+  const bounds = createGroundBounds(relativeCom, supportPoints);
 
   return {
     bounds,
@@ -1126,16 +1150,50 @@ function calculateComStability(frame, supportFrame) {
       left: leftFoot.contact,
       right: rightFoot.contact,
     },
+    frameIndex,
+    isFlight: supportFrameData.phase === 'flight',
     method: supportFrame?.method ?? 'kinematic',
+    relativeCom,
     supportScore: supportFrame?.score ?? null,
+    supportCenter: supportFrameData.center,
+    supportPhase: supportFrameData.phase,
     isStable,
     supportPolygon,
     supportPoints,
+    supportWorldPoints,
+    time: Number.isFinite(frame?.time) ? frame.time : null,
+    trailPoints: [],
   };
 }
 
 function getFrameTarget(frame, targetId) {
   return frame?.targets?.[targetId] ?? frame?.ikTargets?.[targetId] ?? null;
+}
+
+function createSupportFrame(leftFoot, rightFoot, method) {
+  const supports = [
+    leftFoot.contact && leftFoot.center ? { id: 'left', center: leftFoot.center } : null,
+    rightFoot.contact && rightFoot.center ? { id: 'right', center: rightFoot.center } : null,
+  ].filter(Boolean);
+
+  if (supports.length >= 2) {
+    return {
+      center: average2d(supports.map((support) => support.center)),
+      phase: 'double',
+    };
+  }
+
+  if (supports.length === 1) {
+    return {
+      center: supports[0].center,
+      phase: supports[0].id,
+    };
+  }
+
+  return {
+    center: null,
+    phase: method === 'missing support data' ? 'none' : 'flight',
+  };
 }
 
 function createGroundBounds(com, supportPoints) {
@@ -1164,6 +1222,7 @@ function createGroundBounds(com, supportPoints) {
 function createFootSupportPatch(target, isSupport) {
   if (!isSupport || !target?.position) {
     return {
+      center: null,
       contact: false,
       points: [],
     };
@@ -1174,6 +1233,7 @@ function createFootSupportPatch(target, isSupport) {
 
   if (!foot) {
     return {
+      center: null,
       contact: false,
       points: [],
     };
@@ -1192,6 +1252,7 @@ function createFootSupportPatch(target, isSupport) {
   const side = scale2d(lateral, COM_SUPPORT_FOOT_HALF_WIDTH);
 
   return {
+    center: average2d([foot, toe]),
     contact: true,
     points: [
       add2d(heel, side),
@@ -1318,17 +1379,27 @@ function updateComStabilityMeta(stability, statusElement, readoutElement) {
   }
 
   const hasSupport = stability.supportPolygon.length >= 3;
-  const statusText = hasSupport
+  const statusText = stability.isFlight
+    ? 'Flight'
+    : hasSupport
     ? (stability.isStable ? 'Stable' : 'Outside')
     : 'No support';
-  const statusColor = hasSupport
+  const statusColor = stability.isFlight
+    ? '#48f0ff'
+    : hasSupport
     ? (stability.isStable ? '#58d86f' : '#ff4d4d')
     : '#ffd166';
 
   statusElement.textContent = statusText;
   statusElement.style.color = statusColor;
   readoutElement.textContent = [
-    `eCOM xz ${formatNumber(stability.com.x)}, ${formatNumber(stability.com.z)}`,
+    stability.relativeCom
+      ? `eCOM rel xz ${formatNumber(stability.relativeCom.x)}, ${formatNumber(stability.relativeCom.z)}`
+      : 'eCOM rel xz n/a',
+    stability.supportCenter
+      ? `support center ${formatNumber(stability.supportCenter.x)}, ${formatNumber(stability.supportCenter.z)}`
+      : 'support center n/a',
+    `phase ${stability.supportPhase}`,
     `support L ${stability.contacts.left ? 'yes' : 'no'} / R ${stability.contacts.right ? 'yes' : 'no'}`,
     `logic ${stability.method}`,
   ].join('\n');
@@ -1345,37 +1416,45 @@ function drawComStability(context, stability, width, height) {
   }
 
   const mapper = createGroundMapper(stability, width, height);
-  const stableColor = stability.isStable ? '#58d86f' : '#ff4d4d';
+  const stableColor = stability.isFlight
+    ? '#48f0ff'
+    : (stability.isStable ? '#58d86f' : '#ff4d4d');
 
   drawComGrid(context, width, height);
+  drawSupportOrigin(context, mapper);
+  drawComTrail(context, stability.trailPoints, mapper);
+  if (stability.isFlight) {
+    drawComPhaseMessage(context, width, height, 'Flight');
+    return;
+  }
   drawSupportPolygon(context, stability.supportPolygon, mapper, stableColor);
   drawSupportPoints(context, stability.supportPoints, mapper);
+  if (!stability.relativeCom) {
+    drawComPhaseMessage(context, width, height, 'No support');
+    return;
+  }
   drawComProjection(context, stability, mapper, stableColor);
 }
 
 function createGroundMapper(stability, width, height) {
-  const bounds = stability.bounds ?? createGroundBounds(stability.com, stability.supportPoints);
-
-  if (!bounds) {
-    return (point) => ({
-      x: width * 0.5 + (point?.x ?? 0),
-      y: height * 0.5 - (point?.z ?? 0),
-    });
-  }
-
-  const rangeX = Math.max(bounds.maxX - bounds.minX, 0.35);
-  const rangeZ = Math.max(bounds.maxZ - bounds.minZ, 0.35);
+  const bounds = stability.bounds ?? createGroundBounds(stability.relativeCom, stability.supportPoints);
+  const maxAbsX = bounds
+    ? Math.max(Math.abs(bounds.minX), Math.abs(bounds.maxX), 0.18)
+    : 0.18;
+  const maxAbsZ = bounds
+    ? Math.max(Math.abs(bounds.minZ), Math.abs(bounds.maxZ), 0.18)
+    : 0.18;
+  const rangeX = maxAbsX * 2;
+  const rangeZ = maxAbsZ * 2;
   const padding = 26;
   const scale = Math.min(
     (width - padding * 2) / rangeX,
     (height - padding * 2) / rangeZ,
   );
-  const centerX = (bounds.minX + bounds.maxX) * 0.5;
-  const centerZ = (bounds.minZ + bounds.maxZ) * 0.5;
 
   return (point) => ({
-    x: width * 0.5 + (point.x - centerX) * scale,
-    y: height * 0.5 - (point.z - centerZ) * scale,
+    x: width * 0.5 + (point?.x ?? 0) * scale,
+    y: height * 0.5 - (point?.z ?? 0) * scale,
   });
 }
 
@@ -1396,6 +1475,25 @@ function drawComGrid(context, width, height) {
     context.lineTo(width, y);
     context.stroke();
   }
+}
+
+function drawSupportOrigin(context, mapper) {
+  const origin = mapper({ x: 0, z: 0 });
+
+  context.save();
+  context.strokeStyle = 'rgba(72, 240, 255, 0.55)';
+  context.lineWidth = 1.2;
+  context.beginPath();
+  context.moveTo(origin.x - 7, origin.y);
+  context.lineTo(origin.x + 7, origin.y);
+  context.moveTo(origin.x, origin.y - 7);
+  context.lineTo(origin.x, origin.y + 7);
+  context.stroke();
+  context.fillStyle = 'rgba(72, 240, 255, 0.9)';
+  context.beginPath();
+  context.arc(origin.x, origin.y, 2.5, 0, Math.PI * 2);
+  context.fill();
+  context.restore();
 }
 
 function drawSupportPolygon(context, polygon, mapper, color) {
@@ -1425,6 +1523,41 @@ function drawSupportPolygon(context, polygon, mapper, color) {
   context.globalAlpha = 1;
 }
 
+function drawComTrail(context, trailPoints, mapper) {
+  if (!trailPoints || trailPoints.length < 2) {
+    return;
+  }
+
+  const screenPoints = trailPoints.map((point) => mapper(point));
+
+  context.save();
+  context.lineCap = 'round';
+  context.lineJoin = 'round';
+
+  for (let index = 1; index < screenPoints.length; index += 1) {
+    const previous = screenPoints[index - 1];
+    const current = screenPoints[index];
+    const t = index / Math.max(screenPoints.length - 1, 1);
+
+    context.strokeStyle = `rgba(244, 246, 239, ${(0.12 + t * 0.58).toFixed(3)})`;
+    context.lineWidth = 1.1 + t * 1.9;
+    context.beginPath();
+    context.moveTo(previous.x, previous.y);
+    context.lineTo(current.x, current.y);
+    context.stroke();
+  }
+
+  context.restore();
+}
+
+function drawComPhaseMessage(context, width, height, message) {
+  context.fillStyle = 'rgba(244, 246, 239, 0.72)';
+  context.font = '800 11px Inter, Arial, sans-serif';
+  context.textAlign = 'right';
+  context.textBaseline = 'bottom';
+  context.fillText(message, width - 12, height - 10);
+}
+
 function drawSupportPoints(context, points, mapper) {
   context.fillStyle = 'rgba(244, 246, 239, 0.78)';
 
@@ -1438,7 +1571,11 @@ function drawSupportPoints(context, points, mapper) {
 }
 
 function drawComProjection(context, stability, mapper, color) {
-  const projection = mapper(stability.com);
+  if (!stability.relativeCom) {
+    return;
+  }
+
+  const projection = mapper(stability.relativeCom);
   const ballY = projection.y - THREE.MathUtils.clamp(stability.comHeight * 12, 8, 22);
   const gradient = context.createRadialGradient(
     projection.x - 3,
@@ -1840,6 +1977,7 @@ function createComSupportPhaseData(frames) {
   const leftMetrics = createFootSupportMetrics(frames, 'leftFoot');
   const rightMetrics = createFootSupportMetrics(frames, 'rightFoot');
   const frameMap = new Map();
+  const orderedFrames = [];
 
   frames.forEach((frame, index) => {
     const left = leftMetrics[index];
@@ -1859,6 +1997,8 @@ function createComSupportPhaseData(frames) {
 
       if (fallback) {
         method = 'kinematic fallback';
+      } else {
+        method = 'flight phase';
       }
     }
 
@@ -1875,13 +2015,34 @@ function createComSupportPhaseData(frames) {
 
     if (Number.isFinite(frameIndex)) {
       frameMap.set(frameIndex, stability);
+      orderedFrames.push(stability);
     }
   });
+
+  addComTrailPoints(orderedFrames);
 
   return {
     frameCount: frameMap.size,
     frames: frameMap,
+    orderedFrames,
   };
+}
+
+function addComTrailPoints(orderedFrames) {
+  orderedFrames.forEach((stability, index) => {
+    if (!stability) {
+      return;
+    }
+
+    stability.trailPoints = orderedFrames
+      .slice(0, index + 1)
+      .map((item) => item.relativeCom)
+      .filter(Boolean);
+    stability.bounds = createGroundBounds(stability.relativeCom, [
+      ...stability.supportPoints,
+      ...stability.trailPoints,
+    ]);
+  });
 }
 
 function createFootSupportMetrics(frames, targetId) {
@@ -1937,18 +2098,15 @@ function chooseFallbackSupport(left, right) {
   const candidates = [
     ['left', left],
     ['right', right],
-  ].filter(([, metric]) => metric && Number.isFinite(metric.score));
+  ].filter(([, metric]) => metric
+    && Number.isFinite(metric.score)
+    && metric.heightNorm <= COM_SUPPORT_FALLBACK_HEIGHT_NORM);
 
   if (!candidates.length) {
     return null;
   }
 
-  candidates.sort(([, a], [, b]) => {
-    const aLikelySupport = a.heightNorm <= COM_SUPPORT_FALLBACK_HEIGHT_NORM ? 0 : 1;
-    const bLikelySupport = b.heightNorm <= COM_SUPPORT_FALLBACK_HEIGHT_NORM ? 0 : 1;
-
-    return aLikelySupport - bLikelySupport || a.score - b.score;
-  });
+  candidates.sort(([, a], [, b]) => a.score - b.score);
   return candidates[0][0];
 }
 
@@ -2011,6 +2169,26 @@ function add2d(a, b) {
   return {
     x: a.x + b.x,
     z: a.z + b.z,
+  };
+}
+
+function subtract2d(a, b) {
+  return {
+    x: a.x - b.x,
+    z: a.z - b.z,
+  };
+}
+
+function average2d(points) {
+  const validPoints = points.filter(Boolean);
+
+  if (!validPoints.length) {
+    return null;
+  }
+
+  return {
+    x: validPoints.reduce((sum, point) => sum + point.x, 0) / validPoints.length,
+    z: validPoints.reduce((sum, point) => sum + point.z, 0) / validPoints.length,
   };
 }
 
