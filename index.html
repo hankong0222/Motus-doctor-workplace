@@ -19,12 +19,34 @@
       <span class="hud__title">Motus Gym</span>
       <span class="hud__status" id="scene-status">Loading model</span>
     </div>
+    <div class="debug-view-switch" role="tablist" aria-label="Debug views">
+      <button id="debug-dashboard-tab" class="ik-debug-tab" type="button" aria-pressed="true">Dashboard</button>
+      <button id="trajectory-sphere-tab" class="ik-debug-tab" type="button" aria-pressed="false">Trajectory</button>
+    </div>
     <aside class="ik-debug-panel" aria-label="BVH IK and gait analysis debug">
       <div class="ik-debug-panel__header">
         <span class="ik-debug-panel__title">BVH IK / Gait</span>
         <span class="ik-debug-panel__status" id="ik-debug-status">Loading BVH</span>
       </div>
-      <pre id="ik-debug-readout" class="ik-debug-readout">Waiting for BVH analysis</pre>
+      <div id="debug-dashboard-view" class="ik-debug-view">
+        <pre id="ik-debug-readout" class="ik-debug-readout">Waiting for BVH analysis</pre>
+      </div>
+      <div id="trajectory-sphere-view" class="ik-debug-view trajectory-sphere-view" hidden>
+        <canvas id="trajectory-sphere-canvas" class="trajectory-sphere-canvas" aria-label="Pelvis forward axis trajectory sphere"></canvas>
+        <div class="trajectory-sphere-meta">
+          <span id="trajectory-sphere-title">Pelvis Axis Sphere</span>
+          <span id="trajectory-sphere-frame">Waiting for BVH</span>
+        </div>
+        <div id="trajectory-sphere-vector" class="trajectory-sphere-vector">Z axis n/a</div>
+        <div class="com-stability-card">
+          <div class="com-stability-card__header">
+            <span>eCOM Stability</span>
+            <span id="com-stability-status">Waiting</span>
+          </div>
+          <canvas id="com-stability-canvas" class="com-stability-canvas" aria-label="COM stability and support polygon"></canvas>
+          <div id="com-stability-readout" class="com-stability-readout">COM n/a</div>
+        </div>
+      </div>
       <div class="ik-debug-panel__actions">
         <button id="ik-export-json" class="ik-debug-button" type="button" disabled>JSON</button>
         <button id="ik-export-csv" class="ik-debug-button" type="button" disabled>CSV</button>

@@ -4,7 +4,8 @@ import { BVHLoader } from 'three/addons/loaders/BVHLoader.js';
 export const DEFAULT_BVH_URL = '/asset/cJM4ngRqXg83-m9THA1iEvbnr.bvh';
 
 const DEFAULT_BVH_SCALE = 0.01;
-const FOOT_CONTACT_THRESHOLD = 0.055;
+const FOOT_CONTACT_THRESHOLD = 0.105;
+const FOOT_GROUND_PERCENTILE = 0.08;
 const EPSILON = 0.000001;
 const SKELETON_OVERLAY_COLOR = 0xfff176;
 const AXIS_COLORS = {
@@ -943,9 +944,11 @@ function isFootInContact(footPosition, toePosition, baseline = 0) {
 
 function computeContactBaselines({ metadata, mixer, root, chains }) {
   const baselines = {};
+  const lowSamples = {};
 
   chains.filter((chain) => chain.contact).forEach((chain) => {
     baselines[chain.targetId] = Infinity;
+    lowSamples[chain.targetId] = [];
   });
 
   for (let frameIndex = 0; frameIndex < metadata.frames; frameIndex += 1) {
@@ -958,11 +961,16 @@ function computeContactBaselines({ metadata, mixer, root, chains }) {
       const lowest = toe ? Math.min(foot.y, toe.y) : foot.y;
 
       baselines[chain.targetId] = Math.min(baselines[chain.targetId], lowest);
+      lowSamples[chain.targetId].push(lowest);
     });
   }
 
   Object.keys(baselines).forEach((key) => {
-    if (!Number.isFinite(baselines[key])) {
+    const robustGround = percentile(lowSamples[key], FOOT_GROUND_PERCENTILE);
+
+    if (Number.isFinite(robustGround)) {
+      baselines[key] = roundUnit(robustGround);
+    } else if (!Number.isFinite(baselines[key])) {
       baselines[key] = 0;
     } else {
       baselines[key] = roundUnit(baselines[key]);
@@ -1784,6 +1792,8 @@ function serializeAnalysisFrame(frame) {
         label: target.label,
         position: serializeVector(target.position),
         eulerDeg: serializeEuler(target.euler),
+        rootPosition: target.rootPosition ? serializeVector(target.rootPosition) : null,
+        midPosition: target.midPosition ? serializeVector(target.midPosition) : null,
         toePosition: target.toePosition ? serializeVector(target.toePosition) : null,
         toeDirection: target.toeDirection ? serializeVector(target.toeDirection) : null,
         contact: target.contact,
@@ -2070,6 +2080,24 @@ function stripNamespace(name) {
 
 function clamp(value, min, max) {
   return Math.min(Math.max(value, min), max);
+}
+
+function percentile(values, amount) {
+  const finiteValues = values
+    .filter(Number.isFinite)
+    .sort((a, b) => a - b);
+
+  if (!finiteValues.length) {
+    return null;
+  }
+
+  const index = clamp(
+    Math.round((finiteValues.length - 1) * amount),
+    0,
+    finiteValues.length - 1,
+  );
+
+  return finiteValues[index];
 }
 
 function serializeVector(vector) {
